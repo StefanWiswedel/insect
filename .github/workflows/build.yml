@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The 42 core tests gate the build: :core holds the trigger pipeline, the
+      # event assembly and the guards, and none of it is verifiable on a device.
+      # An APK that ships a broken background model is worse than no APK.
+      - name: Core tests
+        run: ./gradlew :core:test
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Publish APK
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: build-${{ github.run_number }}
+          files: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            core/build/reports/tests/test
+            app/build/reports
+          if-no-files-found: ignore
