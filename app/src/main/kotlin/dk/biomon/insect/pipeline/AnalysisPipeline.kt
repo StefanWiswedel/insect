@@ -286,28 +286,6 @@ class AnalysisPipeline(
         return PreviewFrame(w, h, out)
     }
 
-    /**
-     * Frames the pipeline never saw. Reported in aggregate rather than per drop:
-     * a stall produces a burst, and one line per lost frame would bury the
-     * manifest in exactly the situation where the rest of it matters most.
-     */
-    private fun reportDrops(nowMillis: Long) {
-        val total = camera.droppedFrames
-        if (total <= lastDroppedReported) return
-        if (nowMillis - lastDropRecordMillis < DROP_REPORT_INTERVAL_MILLIS) return
-        val delta = total - lastDroppedReported
-        lastDroppedReported = total
-        lastDropRecordMillis = nowMillis
-        recorder.record(
-            Degradation(
-                nowMillis,
-                "dropped_frames",
-                "$delta analysis frame(s) not seen by the trigger ($total this session)",
-            )
-        )
-    }
-
-
     private fun maskSnapshot(decision: TriggerDecision): MaskSnapshot? {
         val blobs = decision.blobs
         val w = decision.workWidth
