@@ -105,9 +105,13 @@ temperature, voltage, charging state, free bytes, and derived watts. Flushed as
 written, never buffered.
 
 **Budget to check against:** the Pixel 6a battery is ~17Wh. Nine hours on
-internal battery alone needs an average under ~1.8W with margin. After the first
-deployment, `analysis/power_report.py` (to be written once there is a manifest to
-run it on) answers this from the manifest directly.
+internal battery alone needs an average under ~1.89W. `analysis/power_report.py`
+answers this from the manifest directly, by two independent methods: the device's
+own current sensor, and the battery percentage actually consumed. The second
+matters because a current sensor can report the charger rather than the load, and
+because the deployment runs with a power bank attached — if the battery never
+discharges, the run cannot answer the internal-battery question at all, and the
+script says so rather than reporting a number that means nothing.
 
 Deploy with the external power bank regardless. The app is designed to survive on
 internal battery so a cable failure degrades the session rather than killing it.
