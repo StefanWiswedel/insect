@@ -44,6 +44,16 @@ python3 analysis/power_report.py /path/to/sessions/040826_0/manifest.jsonl
 bench test, so it instruments itself and the deployment *is* the power
 measurement.
 
+## CI
+
+`.github/workflows/build.yml` runs the core tests and assembles a debug APK on
+every push to `main`, publishing it to a `build-N` release. The tests gate the
+APK deliberately: the trigger pipeline is not verifiable on a device, so an APK
+that ships a broken background model is worse than no APK.
+
+A green build means `:app` type-checks against the real SDK. It does not mean
+anything runs — see DESIGN.md section 7.
+
 ## The milestone that matters
 
 Not a build that compiles. A one-hour screen-off run producing correctly

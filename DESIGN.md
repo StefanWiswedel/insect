@@ -371,11 +371,19 @@ matters more here than in most projects.
 
 42 tests. `./gradlew :core:test`.
 
+**Verified by CI, on every push to `main`:**
+
+- `:app` compiles and assembles. `.github/workflows/build.yml` runs the core
+  tests, then `assembleDebug`, then publishes the APK to a `build-N` release.
+  The core tests gate the APK: an APK shipping a broken background model is
+  worse than no APK.
+
+Note what that does and does not mean. It means the Android half type-checks
+against the real SDK and links against the real AndroidX and Camera2 APIs, which
+is more than could be said before. It does not mean any of it runs.
+
 **Not verified, and honestly not verifiable without the device:**
 
-- **`:app` has never been compiled.** It was written without an Android SDK
-  available. Expect to fix compile errors on first build; treat the Android half
-  as reviewed-but-unbuilt code, not as working code.
 - Everything Camera2 touches: whether the chosen back camera is the right lens,
   whether the analysis and JPEG sizes negotiate, whether AWB has converged by the
   time it is locked, whether the still-request queue stays aligned with the JPEG
