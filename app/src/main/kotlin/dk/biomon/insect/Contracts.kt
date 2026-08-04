@@ -152,10 +152,12 @@ data class AppSettings(
     val capture: CaptureConfig = CaptureConfig(),
     val guards: GuardConfig = GuardConfig(),
     /**
-     * Locked focus distance in dioptres (1/metres). The rig sits ~20cm above the
-     * board, so ~5.0. Locked at session start and logged in the manifest.
+     * Locked focus distance in dioptres (1/metres).
+     *
+     * 3.23 D is 31cm, the measured phone-to-board distance. Aimed from the main
+     * screen per deployment, applied live, and every change is recorded.
      */
-    val focusDistanceDiopters: Float = 5.0f,
+    val focusDistanceDiopters: Float = 3.23f,
 )
 
 interface SettingsRepository {

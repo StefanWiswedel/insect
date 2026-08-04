@@ -129,7 +129,7 @@ settings.
 
 | Setting | Default | Why |
 | --- | --- | --- |
-| Focus | **5.00 D (20 cm)** | The rig sits ~20cm above the board. Adjustable from the main screen, applied live, and every change is recorded. |
+| Focus | **3.23 D (31 cm)** | Measured phone-to-board distance. Adjustable from the main screen, applied live, and every change is recorded. |
 | Analysis stream | **640x480 @ 5fps** | The always-on cost. Downsampled 4x before differencing. |
 | Capture stream | **full sensor resolution, JPEG q85** | q85 is a hard floor: below ~q75 the blocking artefacts inflate blob counts in the laptop's residual. |
 | Capture rate, blob moving | **4fps** | Within the 3-5fps band. Below 3fps in the field, suspect flash write throughput before JPEG encode. |
@@ -140,27 +140,69 @@ settings.
 | Battery | **graceful stop at 5%** | Stop capture, flush, close the manifest with a reason, stop the service. |
 | Thermal | **reduce analysis rate above 40C, stop above 45C** | Battery temperature. Reduce halves the analysis rate (floored at 2fps); stop keeps the service alive. 2C of hysteresis on the way down. |
 
+### Working distance and what it costs
+
+The rig sits **31cm** above the board (measured), so focus is locked at
+**3.23 D**. That is further than the 20cm originally assumed, and the cost falls
+directly on the thing this rig exists to photograph: at 31cm a 7mm insect spans
+roughly **55-60px** at full sensor resolution, down from ~90px at 20cm.
+
+That is still comfortably enough for detection and for the coarse
+classification the corpus is being built to support, but it is a real reduction
+in the pixels-on-target a future classifier will have (see 0.1) and it is worth
+knowing before anyone concludes the crops are disappointing. Lowering the stand
+is the lever if more resolution is ever needed; nothing in software recovers it.
+
 ### Where sessions are written
 
 ```
-/storage/emulated/0/Biomon/sessions/<sessionId>/
-    manifest.jsonl
-    index.db
+/storage/emulated/0/DCIM/Biomon/<sessionId>/
+    SUMMARY.md          human-readable, written as the session runs
+    manifest.jsonl      append-only, one JSON record per line
+    index.db            SQLite, WAL, a convenience and not a dependency
     frames/<sessionId>_e00007_20260804T112233456Z_f00042.jpg
 ```
 
-**Shared storage, deliberately, not app-specific storage.** An app-specific
-directory (`Android/data/dk.biomon.insect/files`) is deleted when the app is
-uninstalled, so a reinstall between deployments would take a day's frames with
-it, and most USB hosts hide or block `Android/data` entirely. A top-level
-`Biomon/` folder appears straight under the phone's MTP root and survives
-reinstalling the app.
+**Shared storage under DCIM, deliberately, not app-specific storage.** Three
+reasons, in order of how much they hurt:
+
+- An app-specific directory (`Android/data/dk.biomon.insect/files`) is **deleted
+  when the app is uninstalled**, so a reinstall between deployments would take a
+  day's frames with it.
+- Most USB hosts hide or block `Android/data` entirely.
+- **DCIM is what the media scanner and MTP expect to hold images.** Files
+  written anywhere are invisible over USB until something indexes them —
+  historically a reboot. Frames are handed to `MediaScannerConnection` in
+  batches as they are written, so the folder appears in the gallery and over USB
+  during the session rather than after a restart. Batched rather than per-file:
+  a scan is a binder round trip plus a media-provider insert, and one per JPEG
+  at 4fps would put real load on the capture path for something nobody looks at
+  mid-deployment.
 
 The cost is that this needs **All Files Access**, granted by hand in system
 settings; the app asks on first run. If it is refused the session still runs,
 falls back to app-specific storage, and records a manifest line saying so --
 losing the frames would be worse than putting them somewhere inconvenient, and
 the manifest says which happened.
+
+### SUMMARY.md
+
+One file per session, written **as the session runs** and rewritten on every
+event, guard transition, error and focus change (and at most every 10s for
+frames). Never composed at shutdown: sessions end abruptly by default, and a
+summary written at the end is a summary that does not exist for exactly the
+deployments most in need of explaining. If the session is still open, or died
+without warning, the file says so at the top rather than looking complete.
+
+It carries session ID, start/end/duration, device, focus in dioptres and cm,
+capture and analysis resolution and quality, event and frame counts, bytes and
+mean frame size, battery start/end/minimum, temperature min/mean/max, every
+degradation and camera error with timestamps, every focus change, the
+termination reason, and a per-event table of start time, duration, frame count
+and peak blob area.
+
+The aggregation lives in `:core` (`SessionSummary`) and is unit-tested, because
+it is the artefact most likely to be read by someone who was not there.
 
 ---
 

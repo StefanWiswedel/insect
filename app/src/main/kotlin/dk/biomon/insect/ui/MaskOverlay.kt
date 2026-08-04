@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.layout.ContentScale
 import dk.biomon.insect.MaskSnapshot
+import dk.biomon.insect.core.image.LumaPreview
 import dk.biomon.insect.PreviewFrame
 import androidx.compose.foundation.Image
 
@@ -24,17 +25,24 @@ import androidx.compose.foundation.Image
  * bait or at a waving branch -- so it draws what actually triggered, not a
  * prettier abstraction of it.
  *
- * One small [Bitmap] the size of the mask is kept and scaled up by the draw,
- * rather than a full-size bitmap rebuilt per update: the snapshot arrives a few
- * times a second and allocating a screen-sized bitmap at that rate would churn
- * the heap for no visible gain.
+ * The [Bitmap] is built at mask resolution and scaled up by the draw, rather
+ * than at screen resolution: the snapshot arrives a few times a second and
+ * allocating a screen-sized bitmap at that rate would churn the heap for no
+ * visible gain. It is drawn *over* the preview, so its background must stay
+ * transparent -- only flagged pixels get an alpha.
  */
 @Composable
 fun MaskOverlay(snapshot: MaskSnapshot?, modifier: Modifier = Modifier) {
     if (snapshot == null || snapshot.width <= 0 || snapshot.height <= 0) return
 
-    val holder = remember { BitmapHolder() }
-    val bitmap = remember(snapshot) { holder.update(snapshot) }
+    // Fresh bitmap per snapshot, for the same reason as the preview above.
+    val bitmap = remember(snapshot) {
+        val pixels = IntArray(snapshot.width * snapshot.height)
+        for (i in snapshot.mask.indices) {
+            pixels[i] = if (snapshot.mask[i].toInt() != 0) MASK_ARGB else 0
+        }
+        Bitmap.createBitmap(pixels, snapshot.width, snapshot.height, Bitmap.Config.ARGB_8888)
+    }
 
     Canvas(modifier = modifier) {
         // Letterbox rather than stretch: a mask drawn at the wrong aspect ratio
@@ -64,48 +72,24 @@ fun MaskOverlay(snapshot: MaskSnapshot?, modifier: Modifier = Modifier) {
     }
 }
 
-/** Reuses one bitmap while the mask geometry is unchanged, which is almost always. */
-private class BitmapHolder {
-    private var bitmap: Bitmap? = null
-    private var pixels = IntArray(0)
-
-    fun update(snapshot: MaskSnapshot): Bitmap {
-        val existing = bitmap
-        val target = if (
-            existing != null &&
-            existing.width == snapshot.width &&
-            existing.height == snapshot.height
-        ) {
-            existing
-        } else {
-            Bitmap.createBitmap(snapshot.width, snapshot.height, Bitmap.Config.ARGB_8888)
-                .also { bitmap = it }
-        }
-        if (pixels.size != snapshot.mask.size) pixels = IntArray(snapshot.mask.size)
-        for (i in snapshot.mask.indices) {
-            pixels[i] = if (snapshot.mask[i].toInt() != 0) MASK_ARGB else 0
-        }
-        target.setPixels(pixels, 0, snapshot.width, 0, 0, snapshot.width, snapshot.height)
-        return target
-    }
-
-    private companion object {
-        /** StateGreen at a third alpha: visible over the preview, not opaque. */
-        const val MASK_ARGB = 0x5557A05B
-    }
-}
-
 /**
  * Draws a grayscale [PreviewFrame] as an image.
  *
- * Kept next to the mask overlay because the two must agree about scaling: both
- * letterbox into the same box, so a blob box lands on the pixels that produced
- * it.
+ * A **fresh, immutable** Bitmap is built per frame rather than mutating a
+ * retained one. Mutating a Bitmap in place and handing the same instance back to
+ * Compose is how the preview ends up frozen or blank: the composition sees an
+ * unchanged object, and the render pipeline is entitled to keep drawing the
+ * texture it already uploaded. A new Bitmap each time removes the question. At
+ * 320x240 and a few hertz the allocation is nothing, and it happens only while
+ * somebody is looking at the screen.
  */
 @Composable
 fun LumaImage(preview: PreviewFrame, modifier: Modifier = Modifier) {
-    val holder = remember { LumaBitmapHolder() }
-    val bitmap = remember(preview) { holder.update(preview) }
+    val bitmap = remember(preview) {
+        val pixels = IntArray(preview.width * preview.height)
+        LumaPreview.toArgb(preview.luma, pixels, pixels.size)
+        Bitmap.createBitmap(pixels, preview.width, preview.height, Bitmap.Config.ARGB_8888)
+    }
     Image(
         bitmap = bitmap.asImageBitmap(),
         contentDescription = null,
@@ -114,29 +98,5 @@ fun LumaImage(preview: PreviewFrame, modifier: Modifier = Modifier) {
     )
 }
 
-/** Reuses one bitmap while the preview geometry is unchanged, which is always. */
-private class LumaBitmapHolder {
-    private var bitmap: Bitmap? = null
-    private var pixels = IntArray(0)
-
-    fun update(preview: PreviewFrame): Bitmap {
-        val existing = bitmap
-        val target = if (
-            existing != null &&
-            existing.width == preview.width &&
-            existing.height == preview.height
-        ) {
-            existing
-        } else {
-            Bitmap.createBitmap(preview.width, preview.height, Bitmap.Config.ARGB_8888)
-                .also { bitmap = it }
-        }
-        if (pixels.size != preview.luma.size) pixels = IntArray(preview.luma.size)
-        for (i in preview.luma.indices) {
-            val v = preview.luma[i].toInt() and 0xFF
-            pixels[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
-        }
-        target.setPixels(pixels, 0, preview.width, 0, 0, preview.width, preview.height)
-        return target
-    }
-}
+/** StateGreen at a third alpha: visible over the preview, not opaque. */
+private const val MASK_ARGB = 0x5557A05B

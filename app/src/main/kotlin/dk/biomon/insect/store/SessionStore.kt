@@ -24,7 +24,8 @@ object SessionLayout {
     const val FRAMES_DIR = "frames"
     const val MANIFEST_FILE = "manifest.jsonl"
     const val DATABASE_FILE = "index.db"
-    const val SUMMARY_FILE = "session.json"
+    /** Human-readable, written as the session runs, pasteable into a chat. */
+    const val SUMMARY_FILE = "SUMMARY.md"
 }
 
 /**
@@ -60,14 +61,31 @@ object SessionLayout {
  */
 object SessionStore {
 
-    /** Top-level shared-storage folder. Visible over MTP, survives uninstall. */
-    const val SHARED_ROOT_NAME = "Biomon"
+    /**
+     * Session root, under DCIM.
+     *
+     * DCIM rather than a top-level folder because DCIM is what the media scanner
+     * and MTP both expect to contain images: a folder here shows up in the
+     * gallery and over USB as soon as its files are scanned, which is how the
+     * frames come off the device. It also survives uninstalling the app, unlike
+     * app-specific storage.
+     */
+    const val SHARED_ROOT_NAME = "DCIM/Biomon"
 
     /**
      * Where sessions will be written, for the UI to show before a session starts.
      * Same decision procedure as [open], without creating anything.
      */
-    fun plannedRoot(context: Context): File = chooseRoot(context, ArrayList())
+    fun plannedRoot(context: Context): File = sessionsRoot(chooseRoot(context, ArrayList()))
+
+    /**
+     * Sessions sit directly under the shared root -- `DCIM/Biomon/<id>/` -- but
+     * keep the `sessions/` level under app-specific storage, where the root is
+     * shared with whatever else the app might put there.
+     */
+    private fun sessionsRoot(root: File): File =
+        if (root.absolutePath.endsWith(SHARED_ROOT_NAME)) root
+        else File(root, SessionLayout.SESSIONS_DIR)
 
     /** True when sessions will land in shared storage rather than the fallback. */
     fun hasSharedStorage(): Boolean =
@@ -80,7 +98,7 @@ object SessionStore {
         val notes = ArrayList<String>(2)
 
         val root = chooseRoot(context, notes)
-        val sessionsRoot = File(root, SessionLayout.SESSIONS_DIR)
+        val sessionsRoot = sessionsRoot(root)
         val sessionId = allocateSessionId(sessionsRoot, notes)
         val directory = File(sessionsRoot, sessionId)
 
@@ -103,7 +121,8 @@ object SessionStore {
         }
         database.sessionOpened(session, appVersion(context))
 
-        val recorder = FileSessionRecorder(session, manifest, database)
+        val scanner = if (hasSharedStorage()) MediaScanner(context) else null
+        val recorder = FileSessionRecorder(session, manifest, database, scanner)
 
         for (note in notes) {
             manifest.append(ErrorRecord(startedAt, "storage", note, recovered = true))
@@ -161,9 +180,9 @@ object SessionStore {
                 "writable; falling back to app-specific storage"
         } else {
             notes += "All Files Access not granted: sessions are going to " +
-                "app-specific storage, which is DELETED IF THE APP IS UNINSTALLED. " +
-                "Grant it and restart the session to write to /" +
-                SHARED_ROOT_NAME + " instead."
+                "app-specific storage, which is DELETED IF THE APP IS UNINSTALLED " +
+                "and will not appear over MTP. Grant it and restart the session to " +
+                "write to /" + SHARED_ROOT_NAME + " instead."
         }
 
         val external = try {

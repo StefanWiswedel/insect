@@ -14,6 +14,7 @@ import dk.biomon.insect.core.manifest.FrameWritten
 import dk.biomon.insect.core.manifest.ManifestRecord
 import dk.biomon.insect.core.manifest.SessionEnd
 import dk.biomon.insect.core.naming.FrameNaming
+import dk.biomon.insect.core.report.SessionSummary
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -24,7 +25,7 @@ import kotlinx.coroutines.flow.update
 
 /**
  * Everything that outlives the process: JPEGs on disk, the manifest beside them,
- * the index behind them.
+ * the index behind them, and a human-readable summary on top.
  *
  * The ordering inside [writeFrame] is deliberate. The frame is written first,
  * then the manifest record, then the database row, because the frame is the
@@ -41,17 +42,24 @@ class FileSessionRecorder(
     override val session: SessionInfo,
     private val manifest: ManifestWriter,
     private val database: SessionDatabase,
+    private val scanner: MediaScanner?,
 ) : SessionRecorder {
 
     private val framesDir = File(session.directory, SessionLayout.FRAMES_DIR)
+    private val summaryFile = File(session.directory, SessionLayout.SUMMARY_FILE)
     private val _stats = MutableStateFlow(SessionStats())
     override val stats: StateFlow<SessionStats> = _stats.asStateFlow()
 
     private val closed = AtomicBoolean(false)
     private val eventStartTimes = HashMap<Long, Long>()
 
+    private val summaryLock = Any()
+    private val summary = SessionSummary()
+    private var lastSummaryWriteMillis = 0L
+
     override fun record(record: ManifestRecord) {
         manifest.append(record)
+        observe(record, force = true)
     }
 
     override fun writeFrame(
@@ -93,24 +101,26 @@ class FileSessionRecorder(
         }
 
         if (error != null) {
-            manifest.append(
+            record(
                 ErrorRecord(wallClockMillis, "frame_write", "$filename: $error", recovered = true)
             )
             return FrameWriteResult(filename, 0, error)
         }
 
         val bytes = jpeg.size.toLong()
-        manifest.append(
-            FrameWritten(
-                atMillis = wallClockMillis,
-                eventId = eventId,
-                sequence = sequence,
-                filename = filename,
-                mode = mode,
-                bytes = bytes,
-                blobs = blobs,
-            )
+        val written = FrameWritten(
+            atMillis = wallClockMillis,
+            eventId = eventId,
+            sequence = sequence,
+            filename = filename,
+            mode = mode,
+            bytes = bytes,
+            blobs = blobs,
         )
+        manifest.append(written)
+        // Throttled: a summary rewrite per frame would be a file write per frame
+        // for a file nobody reads until the session is over.
+        observe(written, force = false)
         database.frameWritten(
             sessionId = session.sessionId,
             eventId = eventId,
@@ -121,6 +131,7 @@ class FileSessionRecorder(
             bytes = bytes,
             blobs = blobs,
         )
+        scanner?.add(target, wallClockMillis)
         // update() rather than a read-modify-write: frames arrive on the capture
         // thread while events are opened on the analysis thread, and a lost
         // update here would quietly under-report the session.
@@ -130,7 +141,9 @@ class FileSessionRecorder(
 
     override fun eventStarted(eventId: Long, atMillis: Long) {
         synchronized(eventStartTimes) { eventStartTimes[eventId] = atMillis }
-        manifest.append(EventStarted(atMillis, eventId))
+        val started = EventStarted(atMillis, eventId)
+        manifest.append(started)
+        observe(started, force = true)
         database.eventStarted(session.sessionId, eventId, atMillis)
         _stats.update { it.copy(events = it.events + 1) }
     }
@@ -151,7 +164,9 @@ class FileSessionRecorder(
             started?.let { atMillis - it } ?: 0L
         }
         val label = reason.name.lowercase()
-        manifest.append(EventEnded(atMillis, eventId, frames, label, duration))
+        val ended = EventEnded(atMillis, eventId, frames, label, duration)
+        manifest.append(ended)
+        observe(ended, force = true)
         database.eventEnded(session.sessionId, eventId, atMillis, frames, label, duration)
     }
 
@@ -166,18 +181,18 @@ class FileSessionRecorder(
     override fun close(reason: String, atMillis: Long) {
         if (!closed.compareAndSet(false, true)) return
         val snapshot = _stats.value
-        manifest.append(
-            SessionEnd(
-                atMillis = atMillis,
-                reason = reason,
-                events = snapshot.events,
-                frames = snapshot.frames,
-                bytesWritten = snapshot.bytesWritten,
-                durationMillis = atMillis - session.startedAtMillis,
-            )
+        val end = SessionEnd(
+            atMillis = atMillis,
+            reason = reason,
+            events = snapshot.events,
+            frames = snapshot.frames,
+            bytesWritten = snapshot.bytesWritten,
+            durationMillis = atMillis - session.startedAtMillis,
         )
+        manifest.append(end)
+        observe(end, force = true)
         if (manifest.lostRecords > 0) {
-            manifest.append(
+            record(
                 ErrorRecord(
                     atMillis,
                     "manifest",
@@ -196,5 +211,53 @@ class FileSessionRecorder(
         )
         database.close()
         manifest.close()
+        scanner?.flush(atMillis)
+    }
+
+    /**
+     * Fold a record into the summary and, when it is worth it, rewrite the file.
+     *
+     * Written as the session runs rather than at the end, because sessions end
+     * abruptly by default and a summary composed at shutdown is a summary that
+     * never exists for the deployments most in need of explaining.
+     */
+    private fun observe(record: ManifestRecord, force: Boolean) {
+        val text = synchronized(summaryLock) {
+            summary.observe(record)
+            val due = force ||
+                record.atMillis - lastSummaryWriteMillis >= SUMMARY_INTERVAL_MILLIS
+            if (!due) return
+            lastSummaryWriteMillis = record.atMillis
+            summary.render(record.atMillis)
+        }
+        writeSummary(text, record.atMillis)
+    }
+
+    /** Rewrite via a sidecar and rename, so a reader never sees half a file. */
+    private fun writeSummary(text: String, atMillis: Long) {
+        val partial = File(session.directory, "${SessionLayout.SUMMARY_FILE}.part")
+        try {
+            FileOutputStream(partial).use { out ->
+                out.write(text.toByteArray(Charsets.UTF_8))
+                out.flush()
+                out.fd.sync()
+            }
+            if (partial.renameTo(summaryFile)) {
+                scanner?.add(summaryFile, atMillis)
+            } else {
+                partial.delete()
+            }
+        } catch (t: Throwable) {
+            // The summary is a convenience over the manifest, which already has
+            // everything. Never let it take the session down.
+            try {
+                partial.delete()
+            } catch (ignored: Throwable) {
+            }
+        }
+    }
+
+    private companion object {
+        const val SUMMARY_INTERVAL_MILLIS = 10_000L
     }
 }

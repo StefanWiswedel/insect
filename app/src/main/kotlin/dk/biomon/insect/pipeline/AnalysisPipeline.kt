@@ -10,6 +10,7 @@ import dk.biomon.insect.camera.CameraController
 import dk.biomon.insect.camera.StillRequest
 import dk.biomon.insect.core.AnalysisFrame
 import dk.biomon.insect.core.blob.Blob
+import dk.biomon.insect.core.image.LumaPreview
 import dk.biomon.insect.core.event.EventAction
 import dk.biomon.insect.core.event.EventEndReason
 import dk.biomon.insect.core.event.EventStateMachine
@@ -241,7 +242,7 @@ class AnalysisPipeline(
      */
     private fun publish(
         decision: TriggerDecision,
-        frame: dk.biomon.insect.core.AnalysisFrame,
+        frame: AnalysisFrame,
         nowMillis: Long,
     ) {
         if (nowMillis - lastPublishMillis < PUBLISH_INTERVAL_MILLIS) return
@@ -264,31 +265,48 @@ class AnalysisPipeline(
     /**
      * Half-resolution copy of the luma for the UI.
      *
-     * A fresh array each time rather than a reused one: the UI reads it on
-     * another thread, and a recycled buffer would tear. At 320x240 and a few
-     * hertz that is a trivial amount of garbage, and only while the screen is on.
+     * The downsample lives in :core because it is the row-stride arithmetic, and
+     * getting that wrong shows up as a black or sheared rectangle rather than as
+     * an error. A fresh array each time rather than a reused one: the UI reads it
+     * on another thread, and a recycled buffer would tear. At 320x240 and a few
+     * hertz that is trivial garbage, and only while the screen is on.
      */
-    private fun previewFrame(frame: dk.biomon.insect.core.AnalysisFrame): PreviewFrame {
-        val w = frame.width / 2
-        val h = frame.height / 2
+    private fun previewFrame(frame: AnalysisFrame): PreviewFrame {
+        val w = LumaPreview.outputWidth(frame.width, PREVIEW_DOWNSAMPLE)
+        val h = LumaPreview.outputHeight(frame.height, PREVIEW_DOWNSAMPLE)
         val out = ByteArray(w * h)
-        val luma = frame.luma
-        val stride = frame.rowStride
-        var i = 0
-        for (y in 0 until h) {
-            val row0 = (y * 2) * stride
-            val row1 = row0 + stride
-            for (x in 0 until w) {
-                val x0 = x * 2
-                val sum = (luma[row0 + x0].toInt() and 0xFF) +
-                    (luma[row0 + x0 + 1].toInt() and 0xFF) +
-                    (luma[row1 + x0].toInt() and 0xFF) +
-                    (luma[row1 + x0 + 1].toInt() and 0xFF)
-                out[i++] = (sum shr 2).toByte()
-            }
-        }
+        LumaPreview.downsample(
+            luma = frame.luma,
+            width = frame.width,
+            height = frame.height,
+            rowStride = frame.rowStride,
+            factor = PREVIEW_DOWNSAMPLE,
+            out = out,
+        )
         return PreviewFrame(w, h, out)
     }
+
+    /**
+     * Frames the pipeline never saw. Reported in aggregate rather than per drop:
+     * a stall produces a burst, and one line per lost frame would bury the
+     * manifest in exactly the situation where the rest of it matters most.
+     */
+    private fun reportDrops(nowMillis: Long) {
+        val total = camera.droppedFrames
+        if (total <= lastDroppedReported) return
+        if (nowMillis - lastDropRecordMillis < DROP_REPORT_INTERVAL_MILLIS) return
+        val delta = total - lastDroppedReported
+        lastDroppedReported = total
+        lastDropRecordMillis = nowMillis
+        recorder.record(
+            Degradation(
+                nowMillis,
+                "dropped_frames",
+                "$delta analysis frame(s) not seen by the trigger ($total this session)",
+            )
+        )
+    }
+
 
     private fun maskSnapshot(decision: TriggerDecision): MaskSnapshot? {
         val blobs = decision.blobs
@@ -312,6 +330,7 @@ class AnalysisPipeline(
     }
 
     private companion object {
+        const val PREVIEW_DOWNSAMPLE = 2
         const val PUBLISH_INTERVAL_MILLIS = 250L
         const val DROP_REPORT_INTERVAL_MILLIS = 10_000L
     }

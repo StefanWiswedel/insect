@@ -25,6 +25,9 @@ data class ExportEstimate(
  */
 object Exporter {
 
+    /** Machine-readable index of what an export contains. */
+    private const val EXPORT_MANIFEST_FILE = "export.json"
+
     fun sessions(context: Context): List<File> {
         // Both roots: sessions written before All Files Access was granted are
         // still in app-specific storage, and they are still data.
@@ -73,6 +76,9 @@ object Exporter {
         File(sessionDir, SessionLayout.DATABASE_FILE).takeIf { it.isFile }?.let {
             it.copyTo(File(destination, SessionLayout.DATABASE_FILE), overwrite = true)
         }
+        File(sessionDir, SessionLayout.SUMMARY_FILE).takeIf { it.isFile }?.let {
+            it.copyTo(File(destination, SessionLayout.SUMMARY_FILE), overwrite = true)
+        }
 
         var copied = 0
         for (frame in File(sessionDir, SessionLayout.FRAMES_DIR).listFiles().orEmpty()) {
@@ -88,7 +94,7 @@ object Exporter {
         }
 
         val estimate = estimate(sessionDir)
-        File(destination, SessionLayout.SUMMARY_FILE).writeText(
+        File(destination, EXPORT_MANIFEST_FILE).writeText(
             """
             {"session_id":"${estimate.sessionId}","frames":${estimate.frames},
             "bytes":${estimate.bytes},"manifest":${estimate.hasManifest},

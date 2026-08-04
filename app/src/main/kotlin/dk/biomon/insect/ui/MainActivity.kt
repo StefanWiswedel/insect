@@ -3,6 +3,7 @@ package dk.biomon.insect.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -44,6 +45,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Belt and braces alongside the manifest's screenOrientation. The manifest
+        // attribute is a request the system is free to ignore -- OEM display
+        // modes, desktop/freeform windowing and forced-resizable developer
+        // options all override it -- whereas this is applied to the running
+        // activity. The rig is a phone on a stand pointing straight down, which
+        // is a portrait posture; the sensor's own orientation is unaffected and
+        // captured frames are never rotated to match.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
         permissionsGranted = hasCamera()
         if (!permissionsGranted) requestPermissions.launch(requiredPermissions())
 
@@ -88,8 +98,8 @@ class MainActivity : ComponentActivity() {
                         body = "Without this, sessions are written to app-specific " +
                             "storage, which Android deletes when the app is " +
                             "uninstalled and which is awkward to reach over USB. " +
-                            "With it, they go to /Biomon on the phone's main " +
-                            "storage and survive a reinstall.",
+                            "With it, they go to DCIM/Biomon, appear in the " +
+                            "gallery and over USB, and survive a reinstall.",
                         confirm = "Open settings",
                         onConfirm = {
                             askedThisLaunch = true

@@ -12,10 +12,10 @@
          silently begin a second session. -->
     <uses-permission
         android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- Sessions are written to /Biomon in shared storage so they survive an
-         uninstall and are reachable over USB without digging into Android/data.
-         Granted by hand in system settings; without it the app falls back to
-         app-specific storage and records that it did. -->
+    <!-- Sessions are written to DCIM/Biomon so they survive an uninstall and are
+         indexed by the media scanner, which is what makes them visible over MTP
+         and in the gallery. Granted by hand in system settings; without it the
+         app falls back to app-specific storage and records that it did. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
