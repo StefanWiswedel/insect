@@ -93,11 +93,13 @@ class CameraController(
     private val captureHandler = Handler(captureThread.looper)
     private val captureExecutor = Executor { captureHandler.post(it) }
 
-    private var device: CameraDevice? = null
-    private var session: CameraCaptureSession? = null
-    private var analysisReader: ImageReader? = null
-    private var jpegReader: ImageReader? = null
-    private var parameters: CaptureParameters? = null
+    // Written on the camera handler, read from the analysis thread when a
+    // trigger fires, so none of these may be cached in a register.
+    @Volatile private var device: CameraDevice? = null
+    @Volatile private var session: CameraCaptureSession? = null
+    @Volatile private var analysisReader: ImageReader? = null
+    @Volatile private var jpegReader: ImageReader? = null
+    @Volatile private var parameters: CaptureParameters? = null
     private val exposureWatcher = ExposureWatcher()
 
     @Volatile private var previewSurface: Surface? = null

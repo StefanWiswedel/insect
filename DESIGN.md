@@ -350,7 +350,47 @@ the theme file.
 
 ---
 
-## 7. Rig and bait notes (for the human)
+## 7. State of verification — read this before deploying
+
+Being precise about what has and has not been checked, because the difference
+matters more here than in most projects.
+
+**Verified by test, on every commit:**
+
+- The trigger pipeline: background model, local threshold, blob detection.
+- That a stationary target survives 200 analysis frames without being absorbed
+  (§3.3), and that a permanently changed scene does re-baseline afterwards.
+- That local normalisation equalises corner and centre sensitivity, and that a
+  global threshold does not (§0.2).
+- Event assembly: post-roll, event extension, the frame cap, the motion-adaptive
+  rate and its recovery on renewed movement.
+- The storage argument itself: a simulated five-minute feeding visit costs a
+  fraction of a flat 3fps, and an empty scene produces almost nothing.
+- Guard tiers and thermal hysteresis; the filename scheme's round trip and sort
+  order; that manifest lines never break the one-record-per-line contract.
+
+42 tests. `./gradlew :core:test`.
+
+**Not verified, and honestly not verifiable without the device:**
+
+- **`:app` has never been compiled.** It was written without an Android SDK
+  available. Expect to fix compile errors on first build; treat the Android half
+  as reviewed-but-unbuilt code, not as working code.
+- Everything Camera2 touches: whether the chosen back camera is the right lens,
+  whether the analysis and JPEG sizes negotiate, whether AWB has converged by the
+  time it is locked, whether the still-request queue stays aligned with the JPEG
+  stream under load.
+- Doze survival, wake-lock behaviour over nine hours, and whether the 60s tick
+  actually fires sixty times an hour with the screen off.
+- Sustained capture rate. If it comes in under 3fps, DESIGN.md 3.2 says to
+  suspect flash write throughput before JPEG encode.
+- The power figure. That is the whole point of the first deployment.
+
+The milestone that closes this gap is the one in §3.5: a one-hour screen-off run
+with correctly timestamped, focused and exposed frames and sixty power samples in
+the manifest. Nothing else counts as "it works".
+
+## 8. Rig and bait notes (for the human)
 
 Bait in four corners of the board, one station per corner. The board is planar
 and parallel to the sensor about 20cm below it, so the whole surface lies in the

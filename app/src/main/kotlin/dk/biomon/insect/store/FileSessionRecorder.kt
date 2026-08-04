@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Everything that outlives the process: JPEGs on disk, the manifest beside them,
@@ -120,9 +121,10 @@ class FileSessionRecorder(
             bytes = bytes,
             blobs = blobs,
         )
-        _stats.value = _stats.value.let {
-            it.copy(frames = it.frames + 1, bytesWritten = it.bytesWritten + bytes)
-        }
+        // update() rather than a read-modify-write: frames arrive on the capture
+        // thread while events are opened on the analysis thread, and a lost
+        // update here would quietly under-report the session.
+        _stats.update { it.copy(frames = it.frames + 1, bytesWritten = it.bytesWritten + bytes) }
         return FrameWriteResult(filename, bytes)
     }
 
@@ -130,7 +132,7 @@ class FileSessionRecorder(
         synchronized(eventStartTimes) { eventStartTimes[eventId] = atMillis }
         manifest.append(EventStarted(atMillis, eventId))
         database.eventStarted(session.sessionId, eventId, atMillis)
-        _stats.value = _stats.value.let { it.copy(events = it.events + 1) }
+        _stats.update { it.copy(events = it.events + 1) }
     }
 
     override fun eventEnded(

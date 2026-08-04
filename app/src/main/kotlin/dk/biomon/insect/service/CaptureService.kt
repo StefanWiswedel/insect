@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.Image
 import android.os.Build
 import android.os.Handler
@@ -62,6 +63,14 @@ class CaptureService : Service() {
     private var started = false
     private var stopping = false
 
+    /**
+     * Set once the camera exists. The static preview hooks are called from the
+     * UI thread at arbitrary times, including before the session has built
+     * anything, and touching a lateinit from there would throw.
+     */
+    @Volatile
+    private var cameraReady = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -87,7 +96,15 @@ class CaptureService : Service() {
         started = true
         settings = SettingsStore.get(applicationContext).settings.value
 
-        startForeground(NOTIFICATION_ID, buildNotification("starting"))
+        // The typed overload is required from API 34 for a camera foreground
+        // service, and the manifest declares the matching type. The camera
+        // permission must already be granted or the platform refuses the start,
+        // which is why the UI asks for it before offering the button.
+        startForeground(
+            NOTIFICATION_ID,
+            buildNotification("starting"),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA,
+        )
         acquireWakeLock()
 
         recorder = SessionStore.open(applicationContext, settings)
@@ -96,6 +113,7 @@ class CaptureService : Service() {
 
         camera = CameraController(applicationContext, settings, cameraCallbacks)
         pipeline = AnalysisPipeline(settings, recorder, camera)
+        cameraReady = true
 
         CaptureBus.publish {
             it.copy(
@@ -276,6 +294,7 @@ class CaptureService : Service() {
     private fun shutdown(reason: String) {
         if (stopping) return
         stopping = true
+        cameraReady = false
         mainHandler.removeCallbacksAndMessages(null)
         val now = System.currentTimeMillis()
         try {
@@ -402,8 +421,7 @@ class CaptureService : Service() {
 
         fun setPreviewSurface(surface: Surface?) {
             val service = instance ?: return
-            if (!service.started || service.stopping) return
-            if (!service::camera.isInitialized) return
+            if (!service.started || service.stopping || !service.cameraReady) return
             service.camera.setPreviewSurface(surface)
         }
 
