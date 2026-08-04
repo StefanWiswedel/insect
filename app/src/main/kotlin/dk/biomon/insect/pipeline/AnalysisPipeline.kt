@@ -4,6 +4,7 @@ import android.media.Image
 import dk.biomon.insect.AppSettings
 import dk.biomon.insect.CaptureBus
 import dk.biomon.insect.MaskSnapshot
+import dk.biomon.insect.PreviewFrame
 import dk.biomon.insect.SessionRecorder
 import dk.biomon.insect.camera.CameraController
 import dk.biomon.insect.camera.StillRequest
@@ -107,7 +108,7 @@ class AnalysisPipeline(
         )
         for (action in actions) handle(action, nowMillis, blobsFullRes)
 
-        publish(decision, nowMillis)
+        publish(decision, frame, nowMillis)
     }
 
     private fun handle(action: EventAction, nowMillis: Long, blobsFullRes: List<Blob>) {
@@ -238,18 +239,55 @@ class AnalysisPipeline(
      * Publish to the UI a few times a second, never per frame, and always with a
      * copy of the mask -- the live one is recycled the moment this returns.
      */
-    private fun publish(decision: TriggerDecision, nowMillis: Long) {
+    private fun publish(
+        decision: TriggerDecision,
+        frame: dk.biomon.insect.core.AnalysisFrame,
+        nowMillis: Long,
+    ) {
         if (nowMillis - lastPublishMillis < PUBLISH_INTERVAL_MILLIS) return
         lastPublishMillis = nowMillis
         val snapshot = maskSnapshot(decision)
+        // Only while somebody is looking. During a deployment the screen is off
+        // and this allocates nothing.
+        val preview = if (CaptureBus.previewWanted) previewFrame(frame) else null
         CaptureBus.publish { state ->
             state.copy(
                 mask = snapshot,
+                preview = preview ?: state.preview.takeIf { CaptureBus.previewWanted },
                 warmingUp = decision.warmingUp,
                 captureMode = if (events.isActive) events.currentMode.name.lowercase() else null,
                 activeEventId = if (events.isActive) events.currentEventId else null,
             )
         }
+    }
+
+    /**
+     * Half-resolution copy of the luma for the UI.
+     *
+     * A fresh array each time rather than a reused one: the UI reads it on
+     * another thread, and a recycled buffer would tear. At 320x240 and a few
+     * hertz that is a trivial amount of garbage, and only while the screen is on.
+     */
+    private fun previewFrame(frame: dk.biomon.insect.core.AnalysisFrame): PreviewFrame {
+        val w = frame.width / 2
+        val h = frame.height / 2
+        val out = ByteArray(w * h)
+        val luma = frame.luma
+        val stride = frame.rowStride
+        var i = 0
+        for (y in 0 until h) {
+            val row0 = (y * 2) * stride
+            val row1 = row0 + stride
+            for (x in 0 until w) {
+                val x0 = x * 2
+                val sum = (luma[row0 + x0].toInt() and 0xFF) +
+                    (luma[row0 + x0 + 1].toInt() and 0xFF) +
+                    (luma[row1 + x0].toInt() and 0xFF) +
+                    (luma[row1 + x0 + 1].toInt() and 0xFF)
+                out[i++] = (sum shr 2).toByte()
+            }
+        }
+        return PreviewFrame(w, h, out)
     }
 
     private fun maskSnapshot(decision: TriggerDecision): MaskSnapshot? {

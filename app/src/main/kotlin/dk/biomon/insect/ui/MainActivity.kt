@@ -3,20 +3,25 @@ package dk.biomon.insect.ui
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
 
 /**
  * The only Activity, and it is incidental.
@@ -28,6 +33,8 @@ import android.content.pm.PackageManager
 class MainActivity : ComponentActivity() {
 
     private var permissionsGranted by mutableStateOf(false)
+    private var batteryExempt by mutableStateOf(true)
+    private var allFilesAccess by mutableStateOf(true)
 
     private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -43,23 +50,65 @@ class MainActivity : ComponentActivity() {
         setContent {
             BiomonTheme {
                 var showSettings by remember { mutableStateOf(false) }
+                var askedThisLaunch by remember { mutableStateOf(false) }
                 val settings = remember { SettingsStore.get(applicationContext) }
+
                 if (showSettings) {
-                    SettingsScreen(
-                        repository = settings,
-                        onBack = { showSettings = false },
-                    )
+                    SettingsScreen(repository = settings, onBack = { showSettings = false })
                 } else {
                     CaptureScreen(
+                        settingsRepository = settings,
                         permissionsGranted = permissionsGranted,
-                        batteryExemptionNeeded = !isBatteryExempt(),
                         onRequestPermissions = { requestPermissions.launch(requiredPermissions()) },
-                        onRequestBatteryExemption = { requestBatteryExemption() },
                         onOpenSettings = { showSettings = true },
+                    )
+                }
+
+                // Asked up front rather than shown as a banner: a throttled
+                // session is a lost day, and a banner on a screen nobody scrolls
+                // is the same as no warning at all.
+                if (!batteryExempt && !askedThisLaunch) {
+                    SetupDialog(
+                        title = "Allow unrestricted battery use",
+                        body = "A deployment runs for nine hours with the screen off. " +
+                            "With battery optimisation on, the system can defer the " +
+                            "timer that writes the power log, and a session that " +
+                            "loses its power samples cannot answer the question it " +
+                            "was run to answer.",
+                        confirm = "Open settings",
+                        onConfirm = {
+                            askedThisLaunch = true
+                            requestBatteryExemption()
+                        },
+                        onDismiss = { askedThisLaunch = true },
+                    )
+                } else if (!allFilesAccess && !askedThisLaunch) {
+                    SetupDialog(
+                        title = "Allow access to all files",
+                        body = "Without this, sessions are written to app-specific " +
+                            "storage, which Android deletes when the app is " +
+                            "uninstalled and which is awkward to reach over USB. " +
+                            "With it, they go to /Biomon on the phone's main " +
+                            "storage and survive a reinstall.",
+                        confirm = "Open settings",
+                        onConfirm = {
+                            askedThisLaunch = true
+                            requestAllFilesAccess()
+                        },
+                        onDismiss = { askedThisLaunch = true },
                     )
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Both permissions are granted in system settings, so the only way to
+        // learn the outcome is to look again on the way back.
+        permissionsGranted = hasCamera()
+        batteryExempt = isBatteryExempt()
+        allFilesAccess = hasAllFilesAccess()
     }
 
     private fun hasCamera(): Boolean =
@@ -73,10 +122,15 @@ class MainActivity : ComponentActivity() {
         }
     }.toTypedArray()
 
-    private fun isBatteryExempt(): Boolean {
+    private fun isBatteryExempt(): Boolean = try {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        return pm.isIgnoringBatteryOptimizations(packageName)
+        pm.isIgnoringBatteryOptimizations(packageName)
+    } catch (t: Throwable) {
+        true
     }
+
+    private fun hasAllFilesAccess(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
 
     /**
      * Nine hours of screen-off capture is exactly what battery optimisation
@@ -103,4 +157,39 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun requestAllFilesAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                )
+            )
+        } catch (t: Throwable) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            } catch (ignored: Throwable) {
+                // The app falls back to app-specific storage and records it.
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupDialog(
+    title: String,
+    body: String,
+    confirm: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(body) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(confirm) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
+    )
 }

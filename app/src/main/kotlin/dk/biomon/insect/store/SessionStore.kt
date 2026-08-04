@@ -1,6 +1,7 @@
 package dk.biomon.insect.store
 
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import dk.biomon.insect.AppSettings
 import dk.biomon.insect.SessionInfo
@@ -38,10 +39,19 @@ object SessionLayout {
  * sessions/<sessionId>/frames/<sessionId>_e00007_...Z_f00042.jpg
  * ```
  *
- * The preferred root is the app-specific directory on external storage: it is
- * where the ~30GB actually is, and it is the only one visible over MTP, which is
- * how the frames reach the analysis laptop. Internal storage is the fallback and
- * is small enough that the disk guard will be doing real work all session.
+ * The preferred root is `/storage/emulated/0/Biomon`, in shared storage. Two
+ * reasons, both learned the hard way rather than chosen for elegance: an
+ * app-specific directory is **deleted when the app is uninstalled**, so a
+ * reinstall between deployments would take a day's frames with it; and it is
+ * awkward to reach over USB, where `Android/data` is hidden or blocked by most
+ * hosts, while a top-level `Biomon/` folder appears immediately under the
+ * phone's MTP root.
+ *
+ * The cost is that shared storage needs All Files Access, which is granted by
+ * hand in system settings. If it has not been granted the session still runs,
+ * falling back to app-specific storage and recording the fact -- the frames are
+ * worth more than the tidiness of where they land, and the manifest says which
+ * happened.
  *
  * Nothing here throws. A deployment that cannot allocate storage still gets a
  * recorder, still runs, and still writes down why it is failing -- an evening
@@ -49,6 +59,19 @@ object SessionLayout {
  * service is nothing at all.
  */
 object SessionStore {
+
+    /** Top-level shared-storage folder. Visible over MTP, survives uninstall. */
+    const val SHARED_ROOT_NAME = "Biomon"
+
+    /**
+     * Where sessions will be written, for the UI to show before a session starts.
+     * Same decision procedure as [open], without creating anything.
+     */
+    fun plannedRoot(context: Context): File = chooseRoot(context, ArrayList())
+
+    /** True when sessions will land in shared storage rather than the fallback. */
+    fun hasSharedStorage(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
 
     fun open(context: Context, settings: AppSettings): SessionRecorder {
         val startedAt = System.currentTimeMillis()
@@ -122,7 +145,27 @@ object SessionStore {
      * actual write. It costs one file once per session and it is the difference
      * between discovering the problem now and discovering it nine hours later.
      */
+    /**
+     * Shared storage first, app-specific storage as the fallback.
+     *
+     * `canWrite()` is not enough on its own -- a read-only remount reports a
+     * mounted volume with a writable-looking directory -- so the check is an
+     * actual write. It costs one file once per session and it is the difference
+     * between discovering the problem now and discovering it nine hours later.
+     */
     private fun chooseRoot(context: Context, notes: MutableList<String>): File {
+        if (hasSharedStorage()) {
+            val shared = File(Environment.getExternalStorageDirectory(), SHARED_ROOT_NAME)
+            if (probeWritable(shared)) return shared
+            notes += "All Files Access is granted but ${shared.absolutePath} is not " +
+                "writable; falling back to app-specific storage"
+        } else {
+            notes += "All Files Access not granted: sessions are going to " +
+                "app-specific storage, which is DELETED IF THE APP IS UNINSTALLED. " +
+                "Grant it and restart the session to write to /" +
+                SHARED_ROOT_NAME + " instead."
+        }
+
         val external = try {
             context.getExternalFilesDir(null)
         } catch (t: Throwable) {

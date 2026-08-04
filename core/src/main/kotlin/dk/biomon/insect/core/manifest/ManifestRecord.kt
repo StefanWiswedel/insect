@@ -147,6 +147,29 @@ data class ExposureChange(
     )
 }
 
+/**
+ * The locked focus distance was changed while the session was running.
+ *
+ * Focus is aimed per deployment from the main screen, so this happens at the
+ * start of most sessions. It matters downstream for the same reason an exposure
+ * change does: refocusing shifts sharpness across the whole frame, which the
+ * background model reads as motion everywhere at once. A run of spurious events
+ * right after one of these records is explained, not mysterious.
+ */
+data class FocusChanged(
+    override val atMillis: Long,
+    val fromDiopters: Float,
+    val toDiopters: Float,
+) : ManifestRecord {
+    override val type: String get() = "focus"
+    override fun toJsonLine(): String = line(
+        type, atMillis,
+        "from_diopters" to fromDiopters,
+        "to_diopters" to toDiopters,
+        "to_cm" to if (toDiopters > 0f) 100f / toDiopters else null,
+    )
+}
+
 data class EventStarted(
     override val atMillis: Long,
     val eventId: Long,

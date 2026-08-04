@@ -18,7 +18,6 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
-import android.view.Surface
 import dk.biomon.insect.AppSettings
 import java.util.ArrayDeque
 import java.util.concurrent.Executor
@@ -40,6 +39,18 @@ data class StillRequest(
  * Camera2 rather than CameraX is a requirement, not a preference -- manual
  * focus, AWB lock and OIS control are exactly what CameraX abstracts away, and
  * all three are load-bearing here.
+ *
+ * **There is no preview surface here, deliberately.** A preview `Surface` comes
+ * and goes with the screen, and every appearance or disappearance would mean
+ * reconfiguring the capture session -- which tears down and rebuilds both
+ * streams, drops frames, and resets the EMA background model. That would happen
+ * at exactly the worst moment: the operator aims the rig, locks the screen, and
+ * walks away, and the first thing the session does once unattended is throw away
+ * the background it just spent thirty frames learning. So the session is
+ * configured once with the analysis and capture surfaces and never touched
+ * again, and the UI preview is rendered from copies of the analysis luma
+ * instead (see AnalysisPipeline). Screen on and screen off are then invisible
+ * to the camera.
  *
  * The analysis stream (640x480 YUV, continuous) and the capture stream
  * (full-resolution JPEG, idle until triggered) belong to the **same** configured
@@ -102,7 +113,6 @@ class CameraController(
     @Volatile private var parameters: CaptureParameters? = null
     private val exposureWatcher = ExposureWatcher()
 
-    @Volatile private var previewSurface: Surface? = null
     @Volatile private var running = false
     @Volatile private var closing = false
     @Volatile private var analysisIntervalNs = 1_000_000_000L / settings.capture.analysisFps
@@ -143,17 +153,20 @@ class CameraController(
     }
 
     /**
-     * Attach or detach the preview. Changing it rebuilds the session, which is
-     * why the deployment runs without one: the screen is off and nothing should
-     * be reconfiguring the camera nine hours in.
+     * Re-aim the lens without reconfiguring anything.
+     *
+     * Focus is adjusted per deployment from the main screen, so this runs while
+     * the session is live. Only the repeating request is reissued; the session,
+     * both streams and the background model are untouched.
      */
-    fun setPreviewSurface(surface: Surface?) {
-        if (previewSurface === surface) return
-        previewSurface = surface
-        if (running) {
-            captureHandler.post { rebuildSession("preview surface changed") }
-        }
+    fun setFocusDiopters(diopters: Float) {
+        val params = parameters ?: return
+        if (!params.setFocusDiopters(diopters)) return
+        captureHandler.post { startRepeating() }
     }
+
+    /** The focus distance actually applied, after clamping to the lens range. */
+    fun appliedFocusDiopters(): Float = parameters?.appliedFocusDiopters ?: 0f
 
     /** Ask for one full-resolution frame. Cheap: the surface is already there. */
     fun requestStill(request: StillRequest) {
@@ -167,6 +180,11 @@ class CameraController(
                 )
                 builder.addTarget(reader.surface)
                 parameters?.apply(builder, lockAwb = awbLocked)
+                // Sensor orientation, not UI orientation. The UI is locked to
+                // portrait for a phone on a stand, but the frames go to the
+                // laptop in the sensor's own frame of reference -- rotating them
+                // to match a UI choice would silently change the coordinate
+                // system the blob boxes are recorded in.
                 builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
                 synchronized(pendingStills) { pendingStills.addLast(request) }
                 activeSession.capture(builder.build(), stillCallback, captureHandler)
@@ -240,10 +258,9 @@ class CameraController(
 
     private fun configureSession(camera: CameraDevice) {
         try {
-            val outputs = ArrayList<OutputConfiguration>(3)
+            val outputs = ArrayList<OutputConfiguration>(2)
             analysisReader?.surface?.let { outputs += OutputConfiguration(it) }
             jpegReader?.surface?.let { outputs += OutputConfiguration(it) }
-            previewSurface?.let { outputs += OutputConfiguration(it) }
 
             camera.createCaptureSession(
                 SessionConfiguration(
@@ -280,7 +297,6 @@ class CameraController(
         try {
             val builder = activeDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             analysisReader?.surface?.let(builder::addTarget)
-            previewSurface?.let(builder::addTarget)
             parameters?.apply(builder, lockAwb = awbLocked)
             activeSession.setRepeatingRequest(builder.build(), repeatingCallback, captureHandler)
         } catch (t: Throwable) {
@@ -412,20 +428,6 @@ class CameraController(
                 callbacks.onSessionRestarted()
             }
         }, delay)
-    }
-
-    private fun rebuildSession(reason: String) {
-        if (closing) return
-        callbacks.onCameraError("rebuilding session: $reason", recovered = true)
-        val camera = device
-        try {
-            session?.stopRepeating()
-            session?.close()
-        } catch (ignored: Throwable) {
-            // A session that will not stop is a session about to be replaced.
-        }
-        session = null
-        if (camera != null) configureSession(camera) else openCamera()
     }
 
     private fun closeSession() {

@@ -1,27 +1,26 @@
 package dk.biomon.insect.ui
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,44 +28,64 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dk.biomon.insect.AppSettings
 import dk.biomon.insect.CaptureBus
 import dk.biomon.insect.CaptureUiState
+import dk.biomon.insect.SettingsRepository
 import dk.biomon.insect.core.policy.DiskLevel
 import dk.biomon.insect.core.policy.ThermalLevel
 import dk.biomon.insect.service.CaptureService
+import kotlinx.coroutines.launch
 
 /**
- * The one screen.
+ * The one screen, in portrait.
+ *
+ * Portrait because the rig is a phone on a stand pointing straight down at a
+ * board, which is a portrait posture; the UI orientation says nothing about the
+ * sensor, and captured frames are never rotated to match it.
  *
  * It is read at arm's length, outdoors, usually in a hurry, to answer one
  * question: is this thing actually working? So the degradations are not tucked
  * into a details pane -- disk pressure, thermal backoff and the last error are
  * on the face of it, because a session quietly capturing nothing is the failure
- * this whole app is built to avoid.
+ * this whole app exists to avoid.
  */
 @Composable
 fun CaptureScreen(
+    settingsRepository: SettingsRepository,
     permissionsGranted: Boolean,
-    batteryExemptionNeeded: Boolean,
     onRequestPermissions: () -> Unit,
-    onRequestBatteryExemption: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val state by CaptureBus.state.collectAsStateWithLifecycle()
+    val settings by settingsRepository.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Preview frames are built on the analysis thread only while this screen is
+    // composed. Nine hours of screen-off deployment allocates none of them.
+    DisposableEffect(Unit) {
+        CaptureBus.previewWanted = true
+        onDispose { CaptureBus.previewWanted = false }
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Row(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
+                    .fillMaxWidth()
+                    .aspectRatio(4f / 3f)
                     .background(Color.Black)
             ) {
                 if (permissionsGranted) {
-                    PreviewSurface(modifier = Modifier.fillMaxSize())
+                    PreviewImage(state, modifier = Modifier.fillMaxSize())
                     MaskOverlay(snapshot = state.mask, modifier = Modifier.fillMaxSize())
                 } else {
                     Column(
@@ -82,74 +101,102 @@ fun CaptureScreen(
                 }
             }
 
-            Column(
-                modifier = Modifier
-                    .width(280.dp)
-                    .fillMaxHeight()
-                    .padding(start = 12.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                StatusHeader(state)
-                Warnings(state, batteryExemptionNeeded, onRequestBatteryExemption)
-                Readings(state)
+            StatusHeader(state)
+            FocusControl(state, settings) { diopters ->
+                // Apply to the running session immediately so the preview shows
+                // the result, and persist it for the next one.
+                CaptureService.setFocusDiopters(diopters)
+                scope.launch {
+                    settingsRepository.update { it.copy(focusDistanceDiopters = diopters) }
+                }
+            }
+            Warnings(state)
+            Readings(state)
 
-                Button(
-                    onClick = {
-                        if (state.running) CaptureService.stop(context)
-                        else CaptureService.start(context)
-                    },
-                    enabled = permissionsGranted,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                ) {
-                    Text(if (state.running) "Stop session" else "Start session")
-                }
-                TextButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
-                    Text("Settings")
-                }
+            Button(
+                onClick = {
+                    if (state.running) CaptureService.stop(context)
+                    else CaptureService.start(context)
+                },
+                enabled = permissionsGranted,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Text(if (state.running) "Stop session" else "Start session")
+            }
+            TextButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Text("Settings")
             }
         }
     }
 }
 
 /**
- * The preview surface, handed straight to the service.
+ * Focus lives here, not in settings.
  *
- * Attaching and detaching rebuilds the camera session, so this is bound to the
- * composable's lifetime and nothing else -- when the Activity goes away the
- * surface is released and capture carries on without it, which is the state the
- * rig spends nine hours in.
+ * It has to be re-aimed for every deployment -- the stand moves, the board
+ * moves -- so burying it behind a settings screen would put the one control
+ * that always needs touching in the place you have to go looking for.
  */
 @Composable
-private fun PreviewSurface(modifier: Modifier = Modifier) {
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            SurfaceView(ctx).apply {
-                holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        CaptureService.setPreviewSurface(holder.surface)
-                    }
-
-                    override fun surfaceChanged(
-                        holder: SurfaceHolder,
-                        format: Int,
-                        width: Int,
-                        height: Int,
-                    ) {
-                        CaptureService.setPreviewSurface(holder.surface)
-                    }
-
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        CaptureService.clearPreviewSurface()
-                    }
-                })
-            }
-        },
-    )
-    DisposableEffect(Unit) {
-        onDispose { CaptureService.clearPreviewSurface() }
+private fun FocusControl(
+    state: CaptureUiState,
+    settings: AppSettings,
+    onChange: (Float) -> Unit,
+) {
+    // Prefer what the camera actually applied: the lens may not reach the
+    // requested distance, and showing the request would be a quiet lie.
+    val value = if (state.running && state.focusDistanceDiopters > 0f) {
+        state.focusDistanceDiopters
+    } else {
+        settings.focusDistanceDiopters
     }
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Focus", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                text = focusLabel(value),
+                style = MaterialTheme.typography.titleMedium,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        Slider(
+            value = value.coerceIn(SettingsRanges.focusDiopters),
+            onValueChange = onChange,
+            valueRange = SettingsRanges.focusDiopters,
+        )
+    }
+}
+
+/** Dioptres are 1/metres, so the centimetres are just the reciprocal. */
+private fun focusLabel(diopters: Float): String =
+    if (diopters <= 0.01f) "infinity" else "%.2f D  (%.0f cm)".format(diopters, 100f / diopters)
+
+/**
+ * The preview, rendered from the analysis stream rather than a camera surface.
+ *
+ * That is what lets the Camera2 session stay configured across a screen lock:
+ * there is no surface to attach or detach. It is grayscale and 320x240, which is
+ * ample for aiming a fixed rig at a board, and it has the useful property that
+ * the mask overlay sits exactly on the pixels the trigger judged.
+ */
+@Composable
+private fun PreviewImage(state: CaptureUiState, modifier: Modifier = Modifier) {
+    val preview = state.preview
+    if (preview == null) {
+        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Text(
+                text = if (state.running) "waiting for frames" else "preview appears once started",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
+    LumaImage(preview, modifier)
 }
 
 @Composable
@@ -169,27 +216,29 @@ private fun StatusHeader(state: CaptureUiState) {
         state.captureMode != null -> "Capturing (${state.captureMode})"
         else -> "Watching"
     }
-    Text(
-        text = label,
-        color = colour,
-        style = MaterialTheme.typography.headlineSmall,
-        fontWeight = FontWeight.Medium,
-    )
-    Text(
-        text = state.sessionId ?: "no session",
-        style = MaterialTheme.typography.bodyMedium,
-        fontFamily = FontFamily.Monospace,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = colour,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = state.sessionId ?: "no session",
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /** Anything that means the session is doing less than it was asked to. */
 @Composable
-private fun Warnings(
-    state: CaptureUiState,
-    batteryExemptionNeeded: Boolean,
-    onRequestBatteryExemption: () -> Unit,
-) {
+private fun Warnings(state: CaptureUiState) {
     val guard = state.guard
     if (guard != null) {
         when (guard.disk) {
@@ -204,19 +253,15 @@ private fun Warnings(
             DiskLevel.NORMAL -> Unit
         }
         when (guard.thermal) {
-            ThermalLevel.WARN, ThermalLevel.HOT -> Warning(
+            ThermalLevel.REDUCED -> Warning(
                 "Thermal backoff: analysis reduced to ${state.analysisFps}fps.",
                 StateAmber,
             )
-            ThermalLevel.CRITICAL -> Warning("Too hot: capture stopped.", StateRed)
+            ThermalLevel.STOPPED -> Warning("Too hot: capture stopped.", StateRed)
             ThermalLevel.NOMINAL -> Unit
         }
     }
     state.lastError?.let { Warning(it, StateRed) }
-    if (batteryExemptionNeeded) {
-        Warning("Battery optimisation is on; a long session may be throttled.", StateAmber)
-        TextButton(onClick = onRequestBatteryExemption) { Text("Exempt this app") }
-    }
 }
 
 @Composable
@@ -232,11 +277,7 @@ private fun Readings(state: CaptureUiState) {
     Reading("Written", "%.2f GB".format(state.stats.bytesWritten / 1e9))
     Reading("Free", guard?.let { "%.1f GB".format(it.freeBytes / 1e9) } ?: "-")
     Reading("Battery", guard?.let { "${it.batteryPercent}%" } ?: "-")
-    Reading(
-        "Temperature",
-        guard?.let { "%.1f C".format(it.temperatureCelsius) } ?: "-",
-    )
-    Reading("Focus", "%.2f D".format(state.focusDistanceDiopters))
+    Reading("Temperature", guard?.let { "%.1f C".format(it.temperatureCelsius) } ?: "-")
     Reading("Analysis", "${state.analysisFps} fps")
 }
 

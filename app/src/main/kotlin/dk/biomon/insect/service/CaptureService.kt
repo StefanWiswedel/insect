@@ -13,7 +13,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.view.Surface
 import dk.biomon.insect.AppSettings
 import dk.biomon.insect.CaptureBus
 import dk.biomon.insect.InsectApp
@@ -26,6 +25,7 @@ import dk.biomon.insect.core.event.EventEndReason
 import dk.biomon.insect.core.manifest.Degradation
 import dk.biomon.insect.core.manifest.ErrorRecord
 import dk.biomon.insect.core.manifest.ExposureChange
+import dk.biomon.insect.core.manifest.FocusChanged
 import dk.biomon.insect.core.manifest.SessionStart
 import dk.biomon.insect.core.policy.GuardEvaluator
 import dk.biomon.insect.core.policy.StopReason
@@ -64,9 +64,9 @@ class CaptureService : Service() {
     private var stopping = false
 
     /**
-     * Set once the camera exists. The static preview hooks are called from the
-     * UI thread at arbitrary times, including before the session has built
-     * anything, and touching a lateinit from there would throw.
+     * Set once the camera exists. The static hooks are called from the UI thread
+     * at arbitrary times, including before the session has built anything, and
+     * touching a lateinit from there would throw.
      */
     @Volatile
     private var cameraReady = false
@@ -126,6 +126,23 @@ class CaptureService : Service() {
 
         camera.start()
         mainHandler.post(powerTick)
+    }
+
+    /**
+     * Apply a focus change and record it.
+     *
+     * Refocusing shifts sharpness across the whole frame, which the background
+     * model reads as motion everywhere at once, so the manifest has to say when
+     * it happened -- otherwise the burst of spurious events that follows looks
+     * like an unexplained swarm.
+     */
+    private fun applyFocus(diopters: Float) {
+        val before = camera.appliedFocusDiopters()
+        camera.setFocusDiopters(diopters)
+        val after = camera.appliedFocusDiopters()
+        if (after == before) return
+        recorder.record(FocusChanged(System.currentTimeMillis(), before, after))
+        CaptureBus.publish { it.copy(focusDistanceDiopters = after) }
     }
 
     private val cameraCallbacks = object : CameraController.Callbacks {
@@ -402,9 +419,9 @@ class CaptureService : Service() {
         private const val ACTION_STOP = "dk.biomon.insect.STOP"
 
         /**
-         * The preview surface, held statically because the UI comes and goes and
-         * the service must not depend on it existing. Null means no preview,
-         * which is how the deployment actually runs.
+         * Held statically because the UI comes and goes and the service must not
+         * depend on it existing -- the deployment runs for nine hours with no
+         * Activity at all.
          */
         @Volatile
         private var instance: CaptureService? = null
@@ -419,12 +436,15 @@ class CaptureService : Service() {
             context.startService(intent)
         }
 
-        fun setPreviewSurface(surface: Surface?) {
+        /**
+         * Re-aim the lens on a running session. No-op when nothing is running:
+         * the value is persisted by the settings store either way and takes
+         * effect at the next session start.
+         */
+        fun setFocusDiopters(diopters: Float) {
             val service = instance ?: return
             if (!service.started || service.stopping || !service.cameraReady) return
-            service.camera.setPreviewSurface(surface)
+            service.applyFocus(diopters)
         }
-
-        fun clearPreviewSurface() = setPreviewSurface(null)
     }
 }

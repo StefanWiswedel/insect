@@ -52,21 +52,28 @@ class GuardEvaluatorTest {
     @Test
     fun `heat reduces the analysis rate before it stops anything`() {
         val e = evaluator()
-        assertEquals(2, e.evaluate(20 * gb, 80, 41f).analysisFps)
-        assertEquals(1, e.evaluate(20 * gb, 80, 46f).analysisFps)
-        assertTrue(e.evaluate(20 * gb, 80, 46f).captureAllowed) { "hot is a degradation, not a stop" }
-        val critical = e.evaluate(20 * gb, 80, 51f)
-        assertFalse(critical.captureAllowed)
-        assertEquals(StopReason.OVERHEATED, critical.stopReason)
+        // Below 40C: full rate.
+        assertEquals(5, e.evaluate(20 * gb, 80, 38f).analysisFps)
+        // Above 40C: reduced, but still capturing -- a degraded session beats a
+        // lost one.
+        val reduced = e.evaluate(20 * gb, 80, 41f)
+        assertEquals(ThermalLevel.REDUCED, reduced.thermal)
+        assertEquals(2, reduced.analysisFps)
+        assertTrue(reduced.captureAllowed)
+        // Above 45C: capture stops, with a reason.
+        val stopped = e.evaluate(20 * gb, 80, 46f)
+        assertEquals(ThermalLevel.STOPPED, stopped.thermal)
+        assertFalse(stopped.captureAllowed)
+        assertEquals(StopReason.OVERHEATED, stopped.stopReason)
     }
 
     @Test
     fun `thermal hysteresis stops the level from flapping on a boundary`() {
         val e = evaluator()
         assertEquals(ThermalLevel.NOMINAL, e.evaluate(20 * gb, 80, 39.9f).thermal)
-        assertEquals(ThermalLevel.WARN, e.evaluate(20 * gb, 80, 40.1f).thermal)
-        // Still WARN inside the hysteresis band...
-        assertEquals(ThermalLevel.WARN, e.evaluate(20 * gb, 80, 39f).thermal)
+        assertEquals(ThermalLevel.REDUCED, e.evaluate(20 * gb, 80, 40.1f).thermal)
+        // Still REDUCED inside the hysteresis band...
+        assertEquals(ThermalLevel.REDUCED, e.evaluate(20 * gb, 80, 39f).thermal)
         // ...and only NOMINAL once it has properly cooled.
         assertEquals(ThermalLevel.NOMINAL, e.evaluate(20 * gb, 80, 37.5f).thermal)
     }

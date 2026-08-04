@@ -26,7 +26,13 @@ data class ExportEstimate(
 object Exporter {
 
     fun sessions(context: Context): List<File> {
-        val roots = listOfNotNull(context.getExternalFilesDir(null), context.filesDir)
+        // Both roots: sessions written before All Files Access was granted are
+        // still in app-specific storage, and they are still data.
+        val roots = listOfNotNull(
+            SessionStore.plannedRoot(context),
+            context.getExternalFilesDir(null),
+            context.filesDir,
+        ).distinct()
         return roots
             .map { File(it, SessionLayout.SESSIONS_DIR) }
             .filter { it.isDirectory }

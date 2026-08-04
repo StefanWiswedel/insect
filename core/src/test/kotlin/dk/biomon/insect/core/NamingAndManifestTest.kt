@@ -91,6 +91,21 @@ class NamingAndManifestTest {
     }
 
     @Test
+    fun `focus changes record both ends and the implied distance`() {
+        val json = dk.biomon.insect.core.manifest.FocusChanged(1L, 5.0f, 4.0f).toJsonLine()
+        assertTrue(json.contains("\"from_diopters\":5")) { json }
+        assertTrue(json.contains("\"to_diopters\":4")) { json }
+        // 4 dioptres is 25cm; the reader should not have to do the arithmetic.
+        assertTrue(json.contains("\"to_cm\":25")) { json }
+    }
+
+    @Test
+    fun `focus at infinity does not divide by zero`() {
+        val json = dk.biomon.insect.core.manifest.FocusChanged(1L, 5.0f, 0.0f).toJsonLine()
+        assertFalse(json.contains("to_cm")) { json }
+    }
+
+    @Test
     fun `manifest lines never break the one-record-per-line contract`() {
         val json = Degradation(1L, "thermal", "backoff\nto 1fps\ttab \"quoted\"").toJsonLine()
         assertFalse(json.contains('\n'))

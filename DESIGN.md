@@ -121,6 +121,49 @@ Tensor G1 runs warm and the device sits in a closed position outdoors.
 
 ---
 
+## 0.4 Defaults
+
+Set explicitly, and these are the values the code ships with. Everything except
+storage location is adjustable; focus is on the main screen, the rest in
+settings.
+
+| Setting | Default | Why |
+| --- | --- | --- |
+| Focus | **5.00 D (20 cm)** | The rig sits ~20cm above the board. Adjustable from the main screen, applied live, and every change is recorded. |
+| Analysis stream | **640x480 @ 5fps** | The always-on cost. Downsampled 4x before differencing. |
+| Capture stream | **full sensor resolution, JPEG q85** | q85 is a hard floor: below ~q75 the blocking artefacts inflate blob counts in the laptop's residual. |
+| Capture rate, blob moving | **4fps** | Within the 3-5fps band. Below 3fps in the field, suspect flash write throughput before JPEG encode. |
+| Capture rate, blob stationary | **1fps** | Feeding is where the frames are redundant. Returns to full rate on the next frame of movement. |
+| Post-roll | **5s** | Continued motion extends the same event rather than starting a new one. |
+| `minContrastFraction` | **0.03** | The threshold floor, as a fraction of local brightness. This is what cancels vignetting. |
+| Disk guard | **degrade below 5GB, stop below 1GB** | Degrade = 1fps ceiling and a 1.5x threshold. Stop keeps the service alive so the manifest closes. |
+| Battery | **graceful stop at 5%** | Stop capture, flush, close the manifest with a reason, stop the service. |
+| Thermal | **reduce analysis rate above 40C, stop above 45C** | Battery temperature. Reduce halves the analysis rate (floored at 2fps); stop keeps the service alive. 2C of hysteresis on the way down. |
+
+### Where sessions are written
+
+```
+/storage/emulated/0/Biomon/sessions/<sessionId>/
+    manifest.jsonl
+    index.db
+    frames/<sessionId>_e00007_20260804T112233456Z_f00042.jpg
+```
+
+**Shared storage, deliberately, not app-specific storage.** An app-specific
+directory (`Android/data/dk.biomon.insect/files`) is deleted when the app is
+uninstalled, so a reinstall between deployments would take a day's frames with
+it, and most USB hosts hide or block `Android/data` entirely. A top-level
+`Biomon/` folder appears straight under the phone's MTP root and survives
+reinstalling the app.
+
+The cost is that this needs **All Files Access**, granted by hand in system
+settings; the app asks on first run. If it is refused the session still runs,
+falls back to app-specific storage, and records a manifest line saying so --
+losing the frames would be worse than putting them somewhere inconvenient, and
+the manifest says which happened.
+
+---
+
 ## 1. What replaces what
 
 The current insect pipeline captures JPEG stills at 3fps from a stock camera app
@@ -263,7 +306,32 @@ session start:
 in the laptop's background-subtraction residual and inflate blob counts. The
 config constructor rejects anything lower.
 
-### 3.5 Foreground service and screen-off
+### 3.5 The preview is not a camera stream
+
+The Camera2 session is configured **once**, with the analysis and capture
+surfaces only, and is never reconfigured for the lifetime of the session.
+
+This is not an implementation detail. A preview `Surface` appears and disappears
+with the screen, and including one in the session means reconfiguring the
+session every time — tearing down and rebuilding both streams, dropping frames,
+and resetting the EMA background model. That would fire at precisely the worst
+moment: the operator aims the rig, locks the screen, walks away, and the first
+thing the unattended session does is throw away the background it just spent
+thirty frames learning.
+
+So the UI preview is rendered from **copies of the analysis luma** the trigger is
+already looking at — half resolution, grayscale, a few hertz, and produced only
+while a screen is actually attached. Screen on and screen off are invisible to
+the camera. It also means the mask overlay lands exactly on the pixels that
+produced it, because both come from the same frame in the same coordinates.
+
+Focus is the one capture parameter adjustable mid-session, because it has to be
+re-aimed per deployment. Changing it reissues the repeating request only; the
+session, both streams and the background model are untouched. Every change is
+recorded (`focus` records), because refocusing shifts sharpness across the whole
+frame and the background model reads that as motion everywhere at once.
+
+### 3.6 Foreground service and screen-off
 
 There is no existing Kotlin audio recorder in this repository to reuse — it was
 not present. The bird station's conventions are followed from the brief rather
@@ -314,10 +382,12 @@ without any clean shutdown having occurred.
   reason, **keep the service alive** so the session ends cleanly. A full disk
   never crashes the service, and never stops it without recording why.
 - **Thermal backoff:** above 40°C battery temperature the analysis framerate
-  halves, above 45°C it drops to 1fps, above 50°C capture stops but the service
-  stays alive. Every transition is logged. Transitions carry 2°C of hysteresis so
-  a temperature sitting on a boundary cannot flap and fill the manifest with
-  noise. A degraded session is better than a lost one.
+  halves (floored at 2fps, below which the centroid displacement test that
+  drives the moving/stationary decision stops meaning anything); above 45°C
+  capture stops but the service stays alive. Every transition is logged.
+  Transitions carry 2°C of hysteresis so a temperature sitting on a boundary
+  cannot flap and fill the manifest with noise. A degraded session is better
+  than a lost one.
 - **Export** produces a directory the existing laptop pipeline consumes without
   modification.
 
@@ -328,6 +398,12 @@ without any clean shutdown having occurred.
 Minimal, and not the point. One screen: preview with the trigger mask overlaid,
 current focus distance, battery percentage and temperature, free space, events so
 far this session, start/stop. A settings screen for thresholds and framerate.
+
+The screen is locked to **portrait**: the rig is a phone on a stand pointing
+straight down at a board, which is a portrait posture. UI orientation says
+nothing about the sensor, and captured frames are never rotated to match it —
+doing so would silently change the coordinate system the blob boxes are recorded
+in.
 
 `.claude/skills/biomon-ui/SKILL.md` is **not present** in this repository, so
 there are no Biomon tokens to follow. Per the brief, the UI is therefore kept

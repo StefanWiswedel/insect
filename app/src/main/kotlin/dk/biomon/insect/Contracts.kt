@@ -99,6 +99,25 @@ interface SessionRecorder {
     fun close(reason: String, atMillis: Long)
 }
 
+/**
+ * A grayscale preview frame, derived from the analysis stream.
+ *
+ * The preview is **not** a camera surface. It is a copy of the luma the trigger
+ * is already looking at, which means the Camera2 session never has to be
+ * reconfigured when the screen turns on or off -- see CameraController. It also
+ * means the mask overlay lines up with what is underneath it by construction,
+ * because both come from the same frame in the same coordinates.
+ *
+ * Produced only while a UI is actually attached; during a deployment nothing
+ * allocates these at all.
+ */
+class PreviewFrame(
+    val width: Int,
+    val height: Int,
+    /** Row-major 8-bit luma, unsigned. Owned by the consumer; never recycled. */
+    val luma: ByteArray,
+)
+
 /** A copy of the trigger mask for the preview overlay. Never the live buffer. */
 class MaskSnapshot(
     val width: Int,
@@ -121,6 +140,7 @@ data class CaptureUiState(
     val captureMode: String? = null,
     val activeEventId: Long? = null,
     val mask: MaskSnapshot? = null,
+    val preview: PreviewFrame? = null,
     /** Most recent recorded error, so a degraded session is visible at a glance. */
     val lastError: String? = null,
     val warmingUp: Boolean = false,

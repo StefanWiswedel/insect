@@ -31,7 +31,20 @@ class CaptureParameters(
      * requested value: a lens cannot focus closer than its minimum, and asking
      * for it silently yields something else.
      */
-    val appliedFocusDiopters: Float = clampFocus(settings.focusDistanceDiopters)
+    var appliedFocusDiopters: Float = clampFocus(settings.focusDistanceDiopters)
+        private set
+
+    /**
+     * Re-aim the lens. Returns false when the value is unsupported or unchanged,
+     * so the caller does not reissue a repeating request for nothing.
+     */
+    fun setFocusDiopters(requested: Float): Boolean {
+        if (!supportsFocusDistance) return false
+        val clamped = clampFocus(requested)
+        if (clamped == appliedFocusDiopters) return false
+        appliedFocusDiopters = clamped
+        return true
+    }
 
     private val supportsFocusDistance: Boolean =
         (characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f) > 0f

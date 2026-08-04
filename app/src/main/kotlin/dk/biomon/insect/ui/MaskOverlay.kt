@@ -12,7 +12,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.layout.ContentScale
 import dk.biomon.insect.MaskSnapshot
+import dk.biomon.insect.PreviewFrame
+import androidx.compose.foundation.Image
 
 /**
  * The trigger mask, drawn over the preview.
@@ -89,5 +92,51 @@ private class BitmapHolder {
     private companion object {
         /** StateGreen at a third alpha: visible over the preview, not opaque. */
         const val MASK_ARGB = 0x5557A05B
+    }
+}
+
+/**
+ * Draws a grayscale [PreviewFrame] as an image.
+ *
+ * Kept next to the mask overlay because the two must agree about scaling: both
+ * letterbox into the same box, so a blob box lands on the pixels that produced
+ * it.
+ */
+@Composable
+fun LumaImage(preview: PreviewFrame, modifier: Modifier = Modifier) {
+    val holder = remember { LumaBitmapHolder() }
+    val bitmap = remember(preview) { holder.update(preview) }
+    Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = null,
+        modifier = modifier,
+        contentScale = ContentScale.Fit,
+    )
+}
+
+/** Reuses one bitmap while the preview geometry is unchanged, which is always. */
+private class LumaBitmapHolder {
+    private var bitmap: Bitmap? = null
+    private var pixels = IntArray(0)
+
+    fun update(preview: PreviewFrame): Bitmap {
+        val existing = bitmap
+        val target = if (
+            existing != null &&
+            existing.width == preview.width &&
+            existing.height == preview.height
+        ) {
+            existing
+        } else {
+            Bitmap.createBitmap(preview.width, preview.height, Bitmap.Config.ARGB_8888)
+                .also { bitmap = it }
+        }
+        if (pixels.size != preview.luma.size) pixels = IntArray(preview.luma.size)
+        for (i in preview.luma.indices) {
+            val v = preview.luma[i].toInt() and 0xFF
+            pixels[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+        }
+        target.setPixels(pixels, 0, preview.width, 0, 0, preview.width, preview.height)
+        return target
     }
 }

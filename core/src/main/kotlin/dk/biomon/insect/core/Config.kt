@@ -113,18 +113,23 @@ data class GuardConfig(
     val degradedMaxFps: Float = 1f,
     /** Battery percentage at which the session shuts down gracefully. */
     val lowBatteryStopPercent: Int = 5,
-    /** Battery temperature (Celsius) at which analysis framerate is reduced. */
-    val thermalWarnCelsius: Float = 40f,
-    /** Battery temperature at which analysis framerate is reduced further. */
-    val thermalHotCelsius: Float = 45f,
-    /** Battery temperature at which capture stops but the service stays alive. */
-    val thermalCriticalCelsius: Float = 50f,
+    /**
+     * Battery temperature (Celsius) above which the analysis framerate is
+     * reduced. The Tensor G1 runs warm and the phone sits closed up outdoors, so
+     * this is expected to be reached on a hot afternoon rather than being an
+     * exceptional condition.
+     */
+    val thermalReduceCelsius: Float = 40f,
+    /**
+     * Battery temperature above which capture stops. The service stays alive and
+     * the manifest stays open, so the session ends cleanly and says why.
+     */
+    val thermalStopCelsius: Float = 45f,
     /** Interval between power-log samples. Non-negotiable #1 fixes this at 60s. */
     val powerSampleIntervalMillis: Long = 60_000,
 ) {
     init {
         require(stopFreeBytes < degradeFreeBytes)
-        require(thermalWarnCelsius < thermalHotCelsius)
-        require(thermalHotCelsius < thermalCriticalCelsius)
+        require(thermalReduceCelsius < thermalStopCelsius)
     }
 }

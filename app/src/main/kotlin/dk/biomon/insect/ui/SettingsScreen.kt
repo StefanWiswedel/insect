@@ -152,14 +152,10 @@ fun SettingsScreen(repository: SettingsRepository, onBack: () -> Unit) {
                     "long and a moved dish pins the model for the rest of the day."
             )
 
-            Section("Optics")
-            SettingSlider(
-                label = "Focus distance",
-                value = settings.focusDistanceDiopters,
-                range = SettingsRanges.focusDiopters,
-                format = { if (it <= 0.01f) "infinity" else "%.2f D (%.0f cm)".format(it, 100 / it) },
-            ) { v -> edit { it.copy(focusDistanceDiopters = v) } }
-            Note("The rig sits about 20cm above the board, so about 5 dioptres.")
+            Note(
+                "Focus is on the main screen, not here: it needs re-aiming for " +
+                    "every deployment."
+            )
         }
     }
 }

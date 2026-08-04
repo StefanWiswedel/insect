@@ -25,6 +25,17 @@ object CaptureBus {
         _state.value = transform(_state.value)
     }
 
+    /**
+     * Whether a UI is attached and wants preview frames.
+     *
+     * The deployment runs with the screen off for nine hours, and building a
+     * preview bitmap several times a second for nobody would be pure waste on
+     * the one thread that must not fall behind. The UI sets this while it is
+     * composed and clears it when it goes away.
+     */
+    @Volatile
+    var previewWanted: Boolean = false
+
     fun reset() {
         _state.value = CaptureUiState()
     }

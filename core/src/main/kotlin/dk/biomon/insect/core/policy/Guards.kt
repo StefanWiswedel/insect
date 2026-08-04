@@ -7,8 +7,15 @@ import dk.biomon.insect.core.TriggerConfig
 /** Storage pressure tiers (DESIGN.md 4). */
 enum class DiskLevel { NORMAL, DEGRADED, STOPPED }
 
-/** Battery-temperature tiers. */
-enum class ThermalLevel { NOMINAL, WARN, HOT, CRITICAL }
+/**
+ * Battery-temperature tiers.
+ *
+ * Two thresholds, not three: reduce the analysis rate above
+ * [GuardConfig.thermalReduceCelsius], stop capture above
+ * [GuardConfig.thermalStopCelsius]. An intermediate tier would be a number
+ * nobody had measured.
+ */
+enum class ThermalLevel { NOMINAL, REDUCED, STOPPED }
 
 /** Why the session should stop, when it should. */
 enum class StopReason { NONE, DISK_FULL, LOW_BATTERY, OVERHEATED }
@@ -97,7 +104,7 @@ class GuardEvaluator(
         val stopReason = when {
             disk == DiskLevel.STOPPED -> StopReason.DISK_FULL
             lowBattery -> StopReason.LOW_BATTERY
-            thermal == ThermalLevel.CRITICAL -> StopReason.OVERHEATED
+            thermal == ThermalLevel.STOPPED -> StopReason.OVERHEATED
             else -> StopReason.NONE
         }
 
@@ -108,9 +115,10 @@ class GuardEvaluator(
         }
         val analysisFps = when (thermal) {
             ThermalLevel.NOMINAL -> capture.analysisFps
-            ThermalLevel.WARN -> (capture.analysisFps / 2).coerceAtLeast(2)
-            ThermalLevel.HOT -> 1
-            ThermalLevel.CRITICAL -> 1
+            // Halved, floored at 2fps: below that the centroid displacement test
+            // that drives the moving/stationary decision stops being meaningful.
+            ThermalLevel.REDUCED -> (capture.analysisFps / 2).coerceAtLeast(2)
+            ThermalLevel.STOPPED -> 1
         }
         val multiplier = when (disk) {
             DiskLevel.DEGRADED -> trigger.diskPressureThresholdMultiplier
@@ -139,9 +147,8 @@ class GuardEvaluator(
         fun crossed(threshold: Float, level: ThermalLevel): Boolean =
             if (lastThermal >= level) t >= threshold - h else t >= threshold
         return when {
-            crossed(guards.thermalCriticalCelsius, ThermalLevel.CRITICAL) -> ThermalLevel.CRITICAL
-            crossed(guards.thermalHotCelsius, ThermalLevel.HOT) -> ThermalLevel.HOT
-            crossed(guards.thermalWarnCelsius, ThermalLevel.WARN) -> ThermalLevel.WARN
+            crossed(guards.thermalStopCelsius, ThermalLevel.STOPPED) -> ThermalLevel.STOPPED
+            crossed(guards.thermalReduceCelsius, ThermalLevel.REDUCED) -> ThermalLevel.REDUCED
             else -> ThermalLevel.NOMINAL
         }
     }
