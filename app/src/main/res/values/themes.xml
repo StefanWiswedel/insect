@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark only. The field tool must look the same on every handset, and a
+         light flash on launch at dawn is a real annoyance in the dark. -->
+    <style name="Theme.BiomonInsect" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF0B0D0F</item>
+        <item name="android:statusBarColor">#FF0B0D0F</item>
+        <item name="android:navigationBarColor">#FF0B0D0F</item>
+    </style>
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An aperture ring with a mark in each corner: the four bait stations. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#57A05B"
+        android:pathData="M54,34a20,20 0 1,0 0.1,0zM54,42a12,12 0 1,1 -0.1,0z" />
+    <path
+        android:fillColor="#B9C2C9"
+        android:pathData="M32,32h6v3h-6zM32,32h3v6h-3zM76,32h-6v3h6zM76,32h-3v6h3zM32,76h6v-3h-6zM32,76h3v-6h-3zM76,76h-6v-3h6zM76,76h-3v-6h3z" />
+</vector>
