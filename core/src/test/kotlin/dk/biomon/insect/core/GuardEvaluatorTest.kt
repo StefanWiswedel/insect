@@ -4,6 +4,7 @@ import dk.biomon.insect.core.policy.DiskLevel
 import dk.biomon.insect.core.policy.GuardEvaluator
 import dk.biomon.insect.core.policy.StopReason
 import dk.biomon.insect.core.policy.ThermalLevel
+import dk.biomon.insect.core.policy.ThermalSeverity
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -93,5 +94,46 @@ class GuardEvaluatorTest {
     fun `disk full outranks other stop reasons`() {
         val s = evaluator().evaluate(100L * 1024 * 1024, 3, 55f)
         assertEquals(StopReason.DISK_FULL, s.stopReason)
+    }
+
+    /**
+     * The reason this input exists: the first field run logged an identical
+     * 28.1C for every sample because the platform never rebroadcast the battery
+     * state. A guard with one input that can freeze is not a guard.
+     */
+    @Test
+    fun `platform thermal status can trip the guard when battery temperature is frozen`() {
+        val e = evaluator()
+        val frozenTemp = 28.1f
+
+        assertEquals(ThermalLevel.NOMINAL, e.evaluate(20 * gb, 80, frozenTemp).thermal)
+
+        val throttling = e.evaluate(20 * gb, 80, frozenTemp, ThermalSeverity.MODERATE)
+        assertEquals(ThermalLevel.REDUCED, throttling.thermal)
+        assertTrue(throttling.captureAllowed) { "moderate throttling degrades, not stops" }
+
+        val severe = e.evaluate(20 * gb, 80, frozenTemp, ThermalSeverity.SEVERE)
+        assertEquals(ThermalLevel.STOPPED, severe.thermal)
+        assertEquals(StopReason.OVERHEATED, severe.stopReason)
+    }
+
+    @Test
+    fun `the more alarming of the two thermal inputs wins`() {
+        val e = evaluator()
+        // Hot battery, calm platform.
+        assertEquals(ThermalLevel.STOPPED, e.evaluate(20 * gb, 80, 46f, ThermalSeverity.NONE).thermal)
+        val cooled = evaluator()
+        // Calm battery, throttling platform.
+        assertEquals(
+            ThermalLevel.REDUCED,
+            cooled.evaluate(20 * gb, 80, 20f, ThermalSeverity.MODERATE).thermal,
+        )
+    }
+
+    @Test
+    fun `light throttling is not treated as a degradation`() {
+        val s = evaluator().evaluate(20 * gb, 80, 25f, ThermalSeverity.LIGHT)
+        assertEquals(ThermalLevel.NOMINAL, s.thermal)
+        assertEquals(5, s.analysisFps)
     }
 }

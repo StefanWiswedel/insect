@@ -17,6 +17,18 @@ enum class DiskLevel { NORMAL, DEGRADED, STOPPED }
  */
 enum class ThermalLevel { NOMINAL, REDUCED, STOPPED }
 
+/**
+ * The platform's own thermal throttling state, mapped from
+ * `PowerManager.getCurrentThermalStatus()`.
+ *
+ * A second, independent input to the thermal guard. Battery temperature is only
+ * refreshed when the system broadcasts a battery change, and on a phone held at
+ * a steady charge that can be never -- the first field run logged an identical
+ * 28.1C for sixteen consecutive samples across fifteen minutes of continuous
+ * camera use. A guard with one input that can silently freeze is not a guard.
+ */
+enum class ThermalSeverity { NONE, LIGHT, MODERATE, SEVERE, CRITICAL }
+
 /** Why the session should stop, when it should. */
 enum class StopReason { NONE, DISK_FULL, LOW_BATTERY, OVERHEATED }
 
@@ -80,7 +92,12 @@ class GuardEvaluator(
     var lastTransitions: List<String> = emptyList()
         private set
 
-    fun evaluate(freeBytes: Long, batteryPercent: Int, temperatureCelsius: Float): GuardState {
+    fun evaluate(
+        freeBytes: Long,
+        batteryPercent: Int,
+        temperatureCelsius: Float,
+        thermalSeverity: ThermalSeverity = ThermalSeverity.NONE,
+    ): GuardState {
         val transitions = ArrayList<String>(2)
 
         val disk = when {
@@ -93,10 +110,13 @@ class GuardEvaluator(
             lastDisk = disk
         }
 
-        val thermal = thermalLevel(temperatureCelsius)
+        // Whichever input is more alarming wins. Temperature is the calibrated
+        // one; severity is the one that cannot freeze.
+        val thermal = maxOf(thermalLevel(temperatureCelsius), severityLevel(thermalSeverity))
         if (thermal != lastThermal) {
             transitions += "thermal ${lastThermal} -> $thermal " +
-                String.format(java.util.Locale.US, "(%.1fC)", temperatureCelsius)
+                String.format(java.util.Locale.US, "(%.1fC", temperatureCelsius) +
+                ", status $thermalSeverity)"
             lastThermal = thermal
         }
 
@@ -138,6 +158,14 @@ class GuardEvaluator(
             thresholdMultiplier = multiplier,
             stopReason = stopReason,
         )
+    }
+
+    private fun severityLevel(severity: ThermalSeverity): ThermalLevel = when (severity) {
+        ThermalSeverity.NONE, ThermalSeverity.LIGHT -> ThermalLevel.NOMINAL
+        // MODERATE is where the platform starts throttling in ways that would
+        // show up as dropped analysis frames anyway; get ahead of it.
+        ThermalSeverity.MODERATE -> ThermalLevel.REDUCED
+        ThermalSeverity.SEVERE, ThermalSeverity.CRITICAL -> ThermalLevel.STOPPED
     }
 
     private fun thermalLevel(t: Float): ThermalLevel {

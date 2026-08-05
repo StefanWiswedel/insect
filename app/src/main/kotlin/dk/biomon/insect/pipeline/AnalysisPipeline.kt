@@ -17,6 +17,8 @@ import dk.biomon.insect.core.event.EventStateMachine
 import dk.biomon.insect.core.manifest.Degradation
 import dk.biomon.insect.core.manifest.ForcedRefresh
 import dk.biomon.insect.core.manifest.RateChanged
+import dk.biomon.insect.core.manifest.WarmupEnded
+import dk.biomon.insect.core.manifest.WarmupStarted
 import dk.biomon.insect.core.trigger.MotionTrigger
 import dk.biomon.insect.core.trigger.TriggerDecision
 
@@ -54,6 +56,9 @@ class AnalysisPipeline(
     @Volatile private var captureHeight = 0
     @Volatile private var analysisWidth = 0
 
+    /** Warm-up bookkeeping, so the opening gap is explicit in the manifest. */
+    private var warmupStartMillis = 0L
+    private var warmupEnded = false
     private var lastPublishMillis = 0L
     private var lastDroppedReported = 0L
     private var lastDropRecordMillis = 0L
@@ -64,9 +69,35 @@ class AnalysisPipeline(
         captureHeight = captureH
     }
 
+    /**
+     * Record the warm-up window.
+     *
+     * The trigger is held off while the EMA converges, and without a record that
+     * opening gap is indistinguishable from a dead sensor. Arming immediately is
+     * the worse alternative: the first field run opened with a 2m20s, 184-frame
+     * event seven seconds in, which was the model settling rather than anything
+     * alive.
+     */
+    private fun noteWarmup(decision: TriggerDecision, nowMillis: Long) {
+        if (warmupStartMillis == 0L) {
+            warmupStartMillis = nowMillis
+            recorder.record(WarmupStarted(nowMillis, settings.trigger.warmupSeconds))
+            return
+        }
+        if (!warmupEnded && !decision.warmingUp) {
+            warmupEnded = true
+            recorder.record(
+                WarmupEnded(nowMillis, decision.frameIndex, nowMillis - warmupStartMillis)
+            )
+        }
+    }
+
     /** The scene may have moved during a camera rebuild; start the model again. */
     fun onCameraRestarted(nowMillis: Long) {
         trigger.reset()
+        // A reset means the model converges again, so the warm-up window reopens.
+        warmupStartMillis = 0L
+        warmupEnded = false
         for (action in events.close(nowMillis, EventEndReason.CAMERA_ERROR)) {
             handle(action, nowMillis, emptyList())
         }
@@ -85,6 +116,7 @@ class AnalysisPipeline(
     fun onImage(image: Image, nowMillis: Long) {
         val frame = copyLuma(image, nowMillis) ?: return
         val decision = trigger.onFrame(frame, thresholdMultiplier)
+        noteWarmup(decision, nowMillis)
 
         if (decision.forcedRefreshPixels > 0) {
             recorder.record(

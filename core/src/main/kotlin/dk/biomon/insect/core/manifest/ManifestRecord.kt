@@ -112,6 +112,20 @@ data class PowerSample(
     val freeBytes: Long,
     /** Derived draw in watts, when voltage and current are both available. */
     val watts: Float?,
+    /**
+     * The platform's own thermal throttling state, independent of battery
+     * temperature. Battery temperature is only refreshed when the system
+     * broadcasts a battery change, which on a phone held at a steady charge can
+     * be never -- the first real run logged an identical 28.1C sixteen times.
+     * This one moves.
+     */
+    val thermalStatus: String? = null,
+    /**
+     * How old the battery reading is, in milliseconds, when that can be
+     * determined. Large and growing means the platform is not refreshing it and
+     * the temperature above should not be trusted.
+     */
+    val batteryAgeMillis: Long? = null,
 ) : ManifestRecord {
     override val type: String get() = "power"
     override fun toJsonLine(): String = line(
@@ -123,6 +137,8 @@ data class PowerSample(
         "charging" to charging,
         "free_bytes" to freeBytes,
         "watts" to watts,
+        "thermal_status" to thermalStatus,
+        "battery_age_ms" to batteryAgeMillis,
     )
 }
 
@@ -167,6 +183,34 @@ data class FocusChanged(
         "from_diopters" to fromDiopters,
         "to_diopters" to toDiopters,
         "to_cm" to if (toDiopters > 0f) 100f / toDiopters else null,
+    )
+}
+
+/**
+ * The background model started converging and the trigger is held off.
+ *
+ * Recorded so the opening gap in every session is explicit. Without it, the
+ * first half-minute of a deployment looks identical to a dead sensor, and the
+ * alternative -- arming immediately -- produces a large spurious event while the
+ * EMA is still settling, which is exactly what the first real run did.
+ */
+data class WarmupStarted(
+    override val atMillis: Long,
+    val seconds: Int,
+) : ManifestRecord {
+    override val type: String get() = "warmup_start"
+    override fun toJsonLine(): String = line(type, atMillis, "seconds" to seconds)
+}
+
+/** The model converged; the trigger is live from here. */
+data class WarmupEnded(
+    override val atMillis: Long,
+    val frames: Long,
+    val durationMillis: Long,
+) : ManifestRecord {
+    override val type: String get() = "warmup_end"
+    override fun toJsonLine(): String = line(
+        type, atMillis, "frames" to frames, "duration_ms" to durationMillis
     )
 }
 

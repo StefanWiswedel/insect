@@ -258,6 +258,7 @@ class CaptureService : Service() {
                     batteryPercent = reading.batteryPercent,
                     temperatureCelsius = if (reading.temperatureCelsius.isNaN()) 0f
                     else reading.temperatureCelsius,
+                    thermalSeverity = reading.thermalSeverity,
                 )
 
                 for (transition in guards.lastTransitions) {

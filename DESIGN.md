@@ -130,6 +130,7 @@ settings.
 | Setting | Default | Why |
 | --- | --- | --- |
 | Focus | **3.23 D (31 cm)** | Measured phone-to-board distance. Adjustable from the main screen, applied live, and every change is recorded. |
+| Trigger warm-up | **30s** | The model must converge before the trigger arms. Six seconds was not enough: the first field run opened with a 184-frame event seven seconds in. Recorded as `warmup_start` / `warmup_end`. |
 | Analysis stream | **640x480 @ 5fps** | The always-on cost. Downsampled 4x before differencing. |
 | Capture stream | **full sensor resolution, JPEG q85** | q85 is a hard floor: below ~q75 the blocking artefacts inflate blob counts in the laptop's residual. |
 | Capture rate, blob moving | **4fps** | Within the 3-5fps band. Below 3fps in the field, suspect flash write throughput before JPEG encode. |
@@ -281,10 +282,26 @@ what visited, how long did it stay — survive losing the first quarter-second.
 Sustained rate once triggered is 3–5fps. **If it falls below 3fps, flash write
 throughput is the likely bottleneck, not JPEG encode** — check that first.
 
-**Motion-adaptive capture rate.** Storage is the binding constraint: ~30GB free,
-no expandable storage, ~4MB a frame at 12MP q85. A flat 3fps burns ~12MB/s while
-triggered — about 40 minutes of total triggered capture for a whole day, and a
-single insect feeding for five minutes would take over 3GB.
+**Motion-adaptive capture rate.** Storage is the binding constraint: ~30GB free
+and no expandable storage. Frame size is scene-dependent and the first field run
+measured it: **929.7 kB mean** on a dark indoor scene at 4000×3000 q85. Daylight
+on a white board — high contrast, high detail, which is what JPEG charges for —
+should run **2–4 MB**. So the realistic budget is:
+
+| Scene | Mean frame | Frames in 30GB | Flat 3fps lasts |
+| --- | --- | --- | --- |
+| Dark indoor (measured) | 0.93 MB | ~32,000 | ~3.0 hours |
+| Daylight, white board (expected) | 2–4 MB | **~8,000–15,000** | **~45–85 minutes** |
+
+The daylight row is the one that governs a deployment, and it is roughly half
+what an earlier ~4MB/30,000-frame assumption implied. It does not change the
+design — the motion-adaptive rate is exactly the response to it — but it does
+mean a flat 3fps would exhaust the card before lunch, and that a single insect
+feeding for five minutes at full rate costs 1.8–3.6GB.
+
+Because the real number depends on the day's light, **`SUMMARY.md` projects
+remaining capacity from the session's own running mean frame size** rather than
+from any constant here. That is the figure to trust in the field.
 
 So the rate varies *within* an event:
 

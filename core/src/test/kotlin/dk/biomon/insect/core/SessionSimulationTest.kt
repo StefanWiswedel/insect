@@ -113,7 +113,7 @@ class SessionSimulationTest {
     @Test
     fun `an empty scene produces almost no captures over a long run`() {
         val scene = SyntheticScene(seed = 21)
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
         val sm = EventStateMachine(CaptureConfig())
         var now = 0L
         var captured = 0

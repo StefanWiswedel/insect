@@ -15,7 +15,7 @@ class BackgroundModelTest {
     @Test
     fun `static scene does not trigger`() {
         val scene = SyntheticScene()
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
         warmUp(trigger, scene)
         var triggered = 0
         repeat(50) { if (trigger.onFrame(scene.frame()).motion) triggered++ }
@@ -25,7 +25,7 @@ class BackgroundModelTest {
     @Test
     fun `moving target at centre triggers`() {
         val scene = SyntheticScene()
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
         warmUp(trigger, scene)
         val target = Rect.centredOn(scene.width / 2, scene.height / 2, 16)
         val decision = trigger.onFrame(scene.frame(target))
@@ -53,8 +53,8 @@ class BackgroundModelTest {
         // A corner bait station, set in from the frame edge the way a dish on the
         // board actually sits.
         val corner = Rect.centredOn(48, 48, 16)
-        val local = TriggerConfig()
-        val global = TriggerConfig(regionGridCols = 1, regionGridRows = 1)
+        val local = TriggerConfig(warmupSeconds = 2)
+        val global = TriggerConfig(regionGridCols = 1, regionGridRows = 1, warmupSeconds = 2)
 
         fun minContrast(config: TriggerConfig, target: Rect): Float {
             for (step in 1..40) {
@@ -88,7 +88,7 @@ class BackgroundModelTest {
 
     @Test
     fun `corner and centre targets of equal reflectance are both detected locally`() {
-        val config = TriggerConfig()
+        val config = TriggerConfig(warmupSeconds = 2)
         for (target in listOf(
             Rect.centredOn(70, 70, 16),
             Rect.centredOn(570, 410, 16),
@@ -110,7 +110,7 @@ class BackgroundModelTest {
     @Test
     fun `stationary target is not absorbed into the background`() {
         val scene = SyntheticScene(seed = 3)
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
         warmUp(trigger, scene)
         val target = Rect.centredOn(320, 240, 16)
         // 200 frames at 5fps is 40 seconds of sitting still. An unmasked EMA at
@@ -128,7 +128,7 @@ class BackgroundModelTest {
      */
     @Test
     fun `forced refresh re-baselines a permanently changed scene`() {
-        val config = TriggerConfig(forcedRefreshSeconds = 4) // 20 frames at 5fps
+        val config = TriggerConfig(forcedRefreshSeconds = 4, warmupSeconds = 2) // 20 frames at 5fps
         val scene = SyntheticScene(seed = 5)
         val trigger = MotionTrigger(config, analysisFps = 5)
         warmUp(trigger, scene)
@@ -147,7 +147,8 @@ class BackgroundModelTest {
     @Test
     fun `warmup suppresses triggering`() {
         val scene = SyntheticScene()
-        val trigger = MotionTrigger(TriggerConfig(warmupFrames = 30), analysisFps = 5)
+        // 6 seconds at 5fps is 30 frames.
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 6), analysisFps = 5)
         val target = Rect.centredOn(320, 240, 40)
         repeat(30) {
             val d = trigger.onFrame(scene.frame(target))
@@ -159,7 +160,7 @@ class BackgroundModelTest {
     @Test
     fun `frame-wide light change is rejected as too large`() {
         val scene = SyntheticScene(seed = 9)
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
         warmUp(trigger, scene)
         val whole = Rect(0, 0, scene.width, scene.height)
         val d = trigger.onFrame(scene.frame(whole, contrast = 0.4f))
@@ -170,13 +171,46 @@ class BackgroundModelTest {
     @Test
     fun `threshold multiplier makes the trigger more selective under disk pressure`() {
         val scene = SyntheticScene(seed = 13)
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
         warmUp(trigger, scene)
         val faint = Rect.centredOn(320, 240, 16)
         val normal = trigger.onFrame(scene.frame(faint, contrast = 0.10f))
         val selective = trigger.onFrame(scene.frame(faint, contrast = 0.10f), thresholdMultiplier = 4f)
         assertTrue(normal.blobs.sumOf { it.areaPx } >= selective.blobs.sumOf { it.areaPx }) {
             "raising the threshold did not reduce the flagged area"
+        }
+    }
+
+    /**
+     * Warm-up is a duration, not a frame count, so halving the analysis rate
+     * must not halve the time the model gets to converge.
+     */
+    @Test
+    fun `warmup lasts the configured seconds regardless of analysis rate`() {
+        for (fps in listOf(2, 5)) {
+            val scene = SyntheticScene(seed = 17)
+            val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 4), analysisFps = fps)
+            val frames = 4 * fps
+            repeat(frames) {
+                assertTrue(trigger.onFrame(scene.frame()).warmingUp) { "ended early at $fps fps" }
+            }
+            assertFalse(trigger.onFrame(scene.frame()).warmingUp) { "did not end at $fps fps" }
+        }
+    }
+
+    /**
+     * The failure this exists to prevent: the first real deployment armed the
+     * trigger six seconds in and opened with a 184-frame event that was the EMA
+     * still settling. Thirty seconds of warm-up covers the convergence.
+     */
+    @Test
+    fun `the default warmup outlasts the settling that produced a spurious opening event`() {
+        val scene = SyntheticScene(seed = 19)
+        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        // Seven seconds in -- when the first field run fired event 1.
+        repeat(35) { trigger.onFrame(scene.frame()) }
+        assertTrue(trigger.onFrame(scene.frame()).warmingUp) {
+            "trigger armed within the window that produced the spurious opening event"
         }
     }
 }

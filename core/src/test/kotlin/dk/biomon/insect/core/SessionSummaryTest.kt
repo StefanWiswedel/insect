@@ -10,6 +10,8 @@ import dk.biomon.insect.core.manifest.FrameWritten
 import dk.biomon.insect.core.manifest.PowerSample
 import dk.biomon.insect.core.manifest.SessionEnd
 import dk.biomon.insect.core.manifest.SessionStart
+import dk.biomon.insect.core.manifest.WarmupEnded
+import dk.biomon.insect.core.manifest.WarmupStarted
 import dk.biomon.insect.core.report.SessionSummary
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -147,5 +149,83 @@ class SessionSummaryTest {
         val md = s.render(t0 + 6_000)
         assertTrue(md.contains("| 7 |")) { md }
         assertTrue(md.contains("| open |")) { md }
+    }
+
+    /**
+     * "How much room is left" is the question in the field; "how much has been
+     * used" is the one a byte counter answers. The projection has to come from
+     * this session's own mean frame size, because a dark indoor test averaged
+     * 930kB while daylight on a white board runs several times that.
+     */
+    @Test
+    fun `remaining capacity is projected from the running mean frame size`() {
+        val s = SessionSummary()
+        s.observe(started())
+        // 10GB free.
+        s.observe(power(60_000, 90, 30f).copy(freeBytes = 10_000_000_000L))
+        // Four frames averaging 2.5MB.
+        repeat(4) { i ->
+            s.observe(
+                FrameWritten(
+                    t0 + 1000L * i, 1, i, "f$i.jpg", "moving", 2_500_000, emptyList()
+                )
+            )
+        }
+        val md = s.render()
+        assertTrue(md.contains("**Free space**: 10.00 GB")) { md }
+        // 10e9 / 2.5e6 = 4000 frames.
+        assertTrue(md.contains("about 4000 more frames")) { md }
+        assertTrue(md.contains("2.50 MB each")) { md }
+    }
+
+    @Test
+    fun `capacity says so plainly when there is nothing to project from`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(power(60_000, 90, 30f).copy(freeBytes = 10_000_000_000L))
+        assertTrue(s.render().contains("no frames yet to estimate from"))
+    }
+
+    @Test
+    fun `the warmup window is reported so the opening gap is explicit`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(WarmupStarted(t0 + 500, 30))
+        s.observe(WarmupEnded(t0 + 30_500, 150, 30_000))
+        val md = s.render()
+        assertTrue(md.contains("## Warm-up")) { md }
+        assertTrue(md.contains("**Configured**: 30s")) { md }
+        assertTrue(md.contains("no events can occur in this window")) { md }
+    }
+
+    @Test
+    fun `an unfinished warmup is shown as still warming rather than as absent`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(WarmupStarted(t0 + 500, 30))
+        assertTrue(s.render(t0 + 5_000).contains("still warming up"))
+    }
+
+    /**
+     * A temperature that never moves is exactly what the first field run
+     * produced. The summary has to say so rather than presenting min == max as
+     * an ordinary reading.
+     */
+    @Test
+    fun `a frozen battery temperature is called out`() {
+        val s = SessionSummary()
+        s.observe(started())
+        repeat(16) { i -> s.observe(power(60_000L * i, 100, 28.1f)) }
+        val md = s.render()
+        assertTrue(md.contains("Battery temperature did not move across 16 samples")) { md }
+        assertTrue(md.contains("Trust the thermal status")) { md }
+    }
+
+    @Test
+    fun `thermal status is surfaced when the platform reports one`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(power(60_000, 90, 30f).copy(thermalStatus = "moderate"))
+        assertTrue(s.render().contains("**Thermal status**: moderate"))
     }
 }

@@ -4,8 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
+import android.os.PowerManager
+import android.os.SystemClock
 import dk.biomon.insect.SessionRecorder
 import dk.biomon.insect.core.manifest.PowerSample
+import dk.biomon.insect.core.policy.ThermalSeverity
 import kotlin.math.abs
 
 /**
@@ -20,6 +24,10 @@ data class PowerReading(
     val voltageMillivolts: Int,
     val charging: Boolean,
     val watts: Float?,
+    /** Platform thermal throttling state; independent of battery temperature. */
+    val thermalSeverity: ThermalSeverity = ThermalSeverity.NONE,
+    /** Age of the underlying battery broadcast, when it can be determined. */
+    val batteryAgeMillis: Long? = null,
 )
 
 /**
@@ -55,6 +63,22 @@ class PowerLogger(
     private val batteryManager: BatteryManager? =
         context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
 
+    private val powerManager: PowerManager? =
+        context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+
+    /**
+     * The last battery broadcast we saw, and when we saw it change.
+     *
+     * The sticky intent is re-read on every sample -- that part was never
+     * cached -- but the *platform* only refreshes it when it broadcasts a
+     * battery change, and on a phone held at a steady charge that can be never.
+     * The first field run logged an identical 28.1C sixteen times. Tracking when
+     * the underlying values last moved turns "the temperature is not changing"
+     * from a suspicion into a number in the manifest.
+     */
+    private var lastBatterySignature: String? = null
+    private var lastBatteryChangeUptime: Long = 0
+
     /** Read the battery, write the manifest record, return the reading. */
     fun sample(atMillis: Long = System.currentTimeMillis()): PowerReading {
         val reading = read()
@@ -68,6 +92,8 @@ class PowerLogger(
                 charging = reading.charging,
                 freeBytes = recorder.freeBytes(),
                 watts = reading.watts,
+                thermalStatus = reading.thermalSeverity.name.lowercase(),
+                batteryAgeMillis = reading.batteryAgeMillis,
             )
         )
         return reading
@@ -106,6 +132,16 @@ class PowerLogger(
             null
         }
 
+        // Track whether the broadcast itself moved, so a frozen temperature is
+        // visible as an age rather than inferred from identical numbers.
+        val signature = "$percent/$temperature/$voltage/$chargeStatus/$plugged"
+        val now = SystemClock.elapsedRealtime()
+        if (signature != lastBatterySignature) {
+            lastBatterySignature = signature
+            lastBatteryChangeUptime = now
+        }
+        val age = if (lastBatteryChangeUptime > 0) now - lastBatteryChangeUptime else null
+
         return PowerReading(
             batteryPercent = percent,
             currentMicroAmps = currentMicroAmps,
@@ -113,13 +149,40 @@ class PowerLogger(
             voltageMillivolts = voltage,
             charging = charging,
             watts = watts,
+            thermalSeverity = thermalSeverity(),
+            batteryAgeMillis = age,
         )
     }
 
     /**
-     * `ACTION_BATTERY_CHANGED` is sticky, so a null receiver returns the last
-     * broadcast without registering anything. Cheap enough to call once a minute,
-     * and it avoids holding a receiver across a nine-hour session.
+     * `PowerManager.getCurrentThermalStatus()` -- the platform's own view of how
+     * hot it is, which updates whether or not a battery broadcast happens. This
+     * is what makes the thermal guard trustworthy when battery temperature
+     * latches.
+     */
+    private fun thermalSeverity(): ThermalSeverity {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return ThermalSeverity.NONE
+        return try {
+            when (powerManager?.currentThermalStatus) {
+                PowerManager.THERMAL_STATUS_NONE -> ThermalSeverity.NONE
+                PowerManager.THERMAL_STATUS_LIGHT -> ThermalSeverity.LIGHT
+                PowerManager.THERMAL_STATUS_MODERATE -> ThermalSeverity.MODERATE
+                PowerManager.THERMAL_STATUS_SEVERE -> ThermalSeverity.SEVERE
+                PowerManager.THERMAL_STATUS_CRITICAL,
+                PowerManager.THERMAL_STATUS_EMERGENCY,
+                PowerManager.THERMAL_STATUS_SHUTDOWN -> ThermalSeverity.CRITICAL
+                else -> ThermalSeverity.NONE
+            }
+        } catch (t: Throwable) {
+            ThermalSeverity.NONE
+        }
+    }
+
+    /**
+     * `ACTION_BATTERY_CHANGED` is sticky, so a null receiver returns the latest
+     * broadcast without registering anything. This is genuinely re-read on every
+     * sample; what it cannot do is make the platform broadcast more often than
+     * it chooses to, which is why [batteryAgeMillis] exists alongside it.
      */
     private fun batteryStatus(): Intent? = try {
         context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))

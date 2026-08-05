@@ -59,8 +59,17 @@ data class TriggerConfig(
      * from pinning the model forever.
      */
     val forcedRefreshSeconds: Int = 120,
-    /** Frames to observe before the trigger is allowed to fire at all. */
-    val warmupFrames: Int = 30,
+    /**
+     * Seconds the background model is given to converge before the trigger is
+     * allowed to fire at all.
+     *
+     * Expressed in seconds rather than frames because it is a property of the
+     * scene, not of the analysis rate: the EMA needs roughly this long to settle
+     * whether it is being fed 2fps or 5fps. Six seconds was not enough -- the
+     * first real deployment opened with a 2m20s, 184-frame event seven seconds
+     * in, which was the model still converging rather than anything alive.
+     */
+    val warmupSeconds: Int = 30,
     /** Multiplier applied to the threshold when the disk guard is degraded. */
     val diskPressureThresholdMultiplier: Float = 1.5f,
 ) {
@@ -71,6 +80,7 @@ data class TriggerConfig(
         require(regionGridCols >= 1 && regionGridRows >= 1)
         require(minThreshold > 0f && maxThreshold >= minThreshold)
         require(minContrastFraction >= 0f && minContrastFraction < 1f)
+        require(warmupSeconds >= 0)
     }
 }
 

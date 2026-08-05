@@ -10,6 +10,8 @@ import dk.biomon.insect.core.manifest.ManifestRecord
 import dk.biomon.insect.core.manifest.PowerSample
 import dk.biomon.insect.core.manifest.SessionEnd
 import dk.biomon.insect.core.manifest.SessionStart
+import dk.biomon.insect.core.manifest.WarmupEnded
+import dk.biomon.insect.core.manifest.WarmupStarted
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -57,6 +59,11 @@ class SessionSummary {
     private var tempSum = 0.0
     private var tempCount = 0
     private var powerSamples = 0
+    private var freeBytes = -1L
+    private var thermalStatus: String? = null
+    private var warmupStartMillis = 0L
+    private var warmupEndMillis = 0L
+    private var warmupSeconds = 0
 
     private val degradations = ArrayList<Pair<Long, String>>()
     private val errors = ArrayList<Triple<Long, String, Boolean>>()
@@ -98,6 +105,8 @@ class SessionSummary {
                     batteryEnd = record.batteryPercent
                     if (record.batteryPercent < batteryMin) batteryMin = record.batteryPercent
                 }
+                if (record.freeBytes > 0) freeBytes = record.freeBytes
+                record.thermalStatus?.let { thermalStatus = it }
                 val t = record.temperatureCelsius
                 if (t.isFinite() && t > -100f) {
                     if (t < tempMin) tempMin = t
@@ -106,6 +115,13 @@ class SessionSummary {
                     tempCount++
                 }
             }
+
+            is WarmupStarted -> {
+                warmupStartMillis = record.atMillis
+                warmupSeconds = record.seconds
+            }
+
+            is WarmupEnded -> warmupEndMillis = record.atMillis
 
             is EventStarted -> {
                 events++
@@ -184,6 +200,23 @@ class SessionSummary {
             if (analysisWidth > 0) "${analysisWidth}x$analysisHeight" else "-",
         )
 
+        sb.append("\n## Warm-up\n\n")
+        if (warmupStartMillis <= 0) {
+            sb.append("Not recorded.\n")
+        } else {
+            row(sb, "Started", isoOrDash(warmupStartMillis))
+            row(
+                sb, "Ended",
+                if (warmupEndMillis > 0) isoOrDash(warmupEndMillis) else "still warming up",
+            )
+            row(sb, "Configured", "${warmupSeconds}s")
+            sb.append(
+                "\nThe trigger is held off while the background model converges, " +
+                    "so no events can occur in this window. A gap here is expected, " +
+                    "not a dead sensor.\n"
+            )
+        }
+
         sb.append("\n## Totals\n\n")
         row(sb, "Events", events.toString())
         row(sb, "Frames", frames.toString())
@@ -193,6 +226,7 @@ class SessionSummary {
             if (frames > 0) humanBytes(bytes / frames) else "-",
         )
         row(sb, "Power samples", powerSamples.toString())
+        appendCapacity(sb)
 
         sb.append("\n## Battery and temperature\n\n")
         row(sb, "Battery start", pct(batteryStart))
@@ -204,6 +238,14 @@ class SessionSummary {
             temp(if (tempCount > 0) (tempSum / tempCount).toFloat() else Float.NaN),
         )
         row(sb, "Temperature max", temp(if (tempMax == -Float.MAX_VALUE) Float.NaN else tempMax))
+        row(sb, "Thermal status", thermalStatus ?: "-")
+        if (tempCount > 1 && tempMin == tempMax) {
+            sb.append(
+                "\n**Battery temperature did not move across ").append(tempCount)
+                .append(" samples.** The platform only refreshes it when it ")
+                .append("broadcasts a battery change, so on steady charge it can ")
+                .append("latch. Trust the thermal status above instead.\n")
+        }
 
         sb.append("\n## Degradations\n\n")
         if (degradations.isEmpty()) {
@@ -253,6 +295,30 @@ class SessionSummary {
             }
         }
         return sb.toString()
+    }
+
+    /**
+     * Remaining capacity, projected from this session's own mean frame size.
+     *
+     * A running total of what has been used answers the wrong question in the
+     * field. What matters at 9am is whether the card will last until 6pm, and
+     * the only honest input for that is how big the frames are actually coming
+     * out on today's scene -- a dark indoor test averaged 930kB, while daylight
+     * on a white board runs several times that.
+     */
+    private fun appendCapacity(sb: StringBuilder) {
+        if (freeBytes <= 0) return
+        row(sb, "Free space", humanBytes(freeBytes))
+        if (frames <= 0 || bytes <= 0) {
+            sb.append("- **Remaining capacity**: no frames yet to estimate from\n")
+            return
+        }
+        val meanFrame = bytes / frames
+        if (meanFrame <= 0) return
+        val remainingFrames = freeBytes / meanFrame
+        sb.append("- **Remaining capacity**: about ").append(remainingFrames)
+            .append(" more frames at ").append(humanBytes(meanFrame))
+            .append(" each\n")
     }
 
     private fun row(sb: StringBuilder, label: String, value: String) {

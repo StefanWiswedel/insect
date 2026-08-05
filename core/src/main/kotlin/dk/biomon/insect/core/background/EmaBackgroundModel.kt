@@ -70,6 +70,9 @@ class EmaBackgroundModel(
     private val forcedRefreshFrames: Int =
         max(1, config.forcedRefreshSeconds * max(1, analysisFps))
 
+    /** Warm-up is configured in seconds; the model counts frames. */
+    private val warmupFrames: Int = config.warmupSeconds * max(1, analysisFps)
+
     private var workWidth = 0
     private var workHeight = 0
 
@@ -138,7 +141,7 @@ class EmaBackgroundModel(
             if (hot) foreground++
         }
 
-        val warming = framesSeen <= config.warmupFrames
+        val warming = framesSeen <= warmupFrames
         var forced = 0
         val alpha = config.backgroundAlpha
         for (i in current.indices) {
