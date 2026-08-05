@@ -37,7 +37,7 @@ class AnalysisPipeline(
     private val recorder: SessionRecorder,
     private val camera: CameraController,
 ) {
-    private val trigger = MotionTrigger(settings.trigger, settings.capture.analysisFps)
+    private val trigger = MotionTrigger(settings.trigger)
     private val events = EventStateMachine(settings.capture)
 
     /** Reused across frames: the Y plane copy the contract says A owns. */

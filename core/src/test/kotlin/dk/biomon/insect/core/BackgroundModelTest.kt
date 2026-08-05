@@ -8,14 +8,22 @@ import org.junit.jupiter.api.Test
 
 class BackgroundModelTest {
 
-    private fun warmUp(trigger: MotionTrigger, scene: SyntheticScene, frames: Int = 60) {
-        repeat(frames) { trigger.onFrame(scene.frame()) }
+    /**
+     * Run the trigger over a static scene for a *duration*, not a frame count.
+     *
+     * Everything in this file is expressed in seconds for the same reason the
+     * model is: at 2fps a 60-frame warm-up is half a minute and at 5fps it is
+     * twelve seconds, so a frame-count helper would quietly test something
+     * different in each rate-varying case.
+     */
+    private fun warmUp(trigger: MotionTrigger, scene: SyntheticScene, seconds: Float = 12f) {
+        repeat(scene.framesFor(seconds)) { trigger.onFrame(scene.frame()) }
     }
 
     @Test
     fun `static scene does not trigger`() {
         val scene = SyntheticScene()
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
         warmUp(trigger, scene)
         var triggered = 0
         repeat(50) { if (trigger.onFrame(scene.frame()).motion) triggered++ }
@@ -25,7 +33,7 @@ class BackgroundModelTest {
     @Test
     fun `moving target at centre triggers`() {
         val scene = SyntheticScene()
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
         warmUp(trigger, scene)
         val target = Rect.centredOn(scene.width / 2, scene.height / 2, 16)
         val decision = trigger.onFrame(scene.frame(target))
@@ -60,8 +68,8 @@ class BackgroundModelTest {
             for (step in 1..40) {
                 val contrast = step * 0.005f
                 val scene = SyntheticScene(seed = 7)
-                val trigger = MotionTrigger(config, analysisFps = 5)
-                warmUp(trigger, scene, frames = 45)
+                val trigger = MotionTrigger(config)
+                warmUp(trigger, scene, seconds = 9f)
                 if ((0 until 3).any { trigger.onFrame(scene.frame(target, contrast)).motion }) {
                     return contrast
                 }
@@ -95,7 +103,7 @@ class BackgroundModelTest {
             Rect.centredOn(320, 240, 16),
         )) {
             val scene = SyntheticScene(seed = 11)
-            val trigger = MotionTrigger(config, analysisFps = 5)
+            val trigger = MotionTrigger(config)
             warmUp(trigger, scene)
             assertTrue((0 until 5).any { trigger.onFrame(scene.frame(target)).motion }) {
                 "missed target at $target"
@@ -110,16 +118,19 @@ class BackgroundModelTest {
     @Test
     fun `stationary target is not absorbed into the background`() {
         val scene = SyntheticScene(seed = 3)
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
         warmUp(trigger, scene)
         val target = Rect.centredOn(320, 240, 16)
-        // 200 frames at 5fps is 40 seconds of sitting still. An unmasked EMA at
-        // alpha 0.02 would have dissolved it inside a couple of seconds.
+        // 40 seconds of sitting still. An unmasked EMA with a 10s time constant
+        // would have dissolved it inside a few seconds.
+        val frames = scene.framesFor(40f)
         var lastSeen = -1
-        repeat(200) { i ->
+        repeat(frames) { i ->
             if (trigger.onFrame(scene.frame(target)).motion) lastSeen = i
         }
-        assertEquals(199, lastSeen) { "target dissolved into the background at frame $lastSeen" }
+        assertEquals(frames - 1, lastSeen) {
+            "target dissolved into the background at frame $lastSeen"
+        }
     }
 
     /**
@@ -128,14 +139,14 @@ class BackgroundModelTest {
      */
     @Test
     fun `forced refresh re-baselines a permanently changed scene`() {
-        val config = TriggerConfig(forcedRefreshSeconds = 4, warmupSeconds = 2) // 20 frames at 5fps
+        val config = TriggerConfig(forcedRefreshSeconds = 4, warmupSeconds = 2)
         val scene = SyntheticScene(seed = 5)
-        val trigger = MotionTrigger(config, analysisFps = 5)
+        val trigger = MotionTrigger(config)
         warmUp(trigger, scene)
         val moved = Rect.centredOn(320, 240, 40)
         var forcedTotal = 0
         var stillMotionAtEnd = true
-        repeat(60) {
+        repeat(scene.framesFor(12f)) {
             val d = trigger.onFrame(scene.frame(moved))
             forcedTotal += d.forcedRefreshPixels
             stillMotionAtEnd = d.motion
@@ -147,10 +158,9 @@ class BackgroundModelTest {
     @Test
     fun `warmup suppresses triggering`() {
         val scene = SyntheticScene()
-        // 6 seconds at 5fps is 30 frames.
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 6), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 6))
         val target = Rect.centredOn(320, 240, 40)
-        repeat(30) {
+        repeat(scene.framesFor(6f)) {
             val d = trigger.onFrame(scene.frame(target))
             assertTrue(d.warmingUp)
             assertFalse(d.motion)
@@ -160,7 +170,7 @@ class BackgroundModelTest {
     @Test
     fun `frame-wide light change is rejected as too large`() {
         val scene = SyntheticScene(seed = 9)
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
         warmUp(trigger, scene)
         val whole = Rect(0, 0, scene.width, scene.height)
         val d = trigger.onFrame(scene.frame(whole, contrast = 0.4f))
@@ -171,11 +181,12 @@ class BackgroundModelTest {
     @Test
     fun `threshold multiplier makes the trigger more selective under disk pressure`() {
         val scene = SyntheticScene(seed = 13)
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
         warmUp(trigger, scene)
         val faint = Rect.centredOn(320, 240, 16)
         val normal = trigger.onFrame(scene.frame(faint, contrast = 0.10f))
-        val selective = trigger.onFrame(scene.frame(faint, contrast = 0.10f), thresholdMultiplier = 4f)
+        val selective =
+            trigger.onFrame(scene.frame(faint, contrast = 0.10f), thresholdMultiplier = 4f)
         assertTrue(normal.blobs.sumOf { it.areaPx } >= selective.blobs.sumOf { it.areaPx }) {
             "raising the threshold did not reduce the flagged area"
         }
@@ -187,14 +198,22 @@ class BackgroundModelTest {
      */
     @Test
     fun `warmup lasts the configured seconds regardless of analysis rate`() {
-        for (fps in listOf(2, 5)) {
-            val scene = SyntheticScene(seed = 17)
-            val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 4), analysisFps = fps)
-            val frames = 4 * fps
-            repeat(frames) {
-                assertTrue(trigger.onFrame(scene.frame()).warmingUp) { "ended early at $fps fps" }
+        for (fps in listOf(2, 3, 5, 8)) {
+            val scene = SyntheticScene(fps = fps, seed = 17)
+            val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 4))
+            var endedAtSeconds = Float.MAX_VALUE
+            for (i in 0 until scene.framesFor(20f)) {
+                if (!trigger.onFrame(scene.frame()).warmingUp) {
+                    endedAtSeconds = i.toFloat() / fps
+                    break
+                }
             }
-            assertFalse(trigger.onFrame(scene.frame()).warmingUp) { "did not end at $fps fps" }
+            // One frame of quantisation, and no more: the window is 4 seconds at
+            // every rate, not 4 seconds at 5fps and 10 at 2fps.
+            val slack = 1f / fps
+            assertTrue(endedAtSeconds in 4f..(4f + 2 * slack)) {
+                "warm-up ended at ${endedAtSeconds}s at $fps fps, not the configured 4s"
+            }
         }
     }
 
@@ -206,11 +225,126 @@ class BackgroundModelTest {
     @Test
     fun `the default warmup outlasts the settling that produced a spurious opening event`() {
         val scene = SyntheticScene(seed = 19)
-        val trigger = MotionTrigger(TriggerConfig(), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig())
         // Seven seconds in -- when the first field run fired event 1.
-        repeat(35) { trigger.onFrame(scene.frame()) }
+        repeat(scene.framesFor(7f)) { trigger.onFrame(scene.frame()) }
         assertTrue(trigger.onFrame(scene.frame()).warmingUp) {
             "trigger armed within the window that produced the spurious opening event"
+        }
+    }
+
+    /**
+     * The core of the frames-vs-time audit for the background EMA.
+     *
+     * A step change in the scene must fade at the same *wall-clock* rate at any
+     * analysis rate. With a fixed per-frame alpha it did not: at 2fps the
+     * background adapted 2.5x more slowly in seconds, so a scene that had
+     * genuinely changed stayed flagged as motion for two and a half times as
+     * long on a hot afternoon as on a cool morning. Reading the manifest, that
+     * looks like insects being more active in the heat.
+     *
+     * The step is applied to the *unmasked* path by keeping it below the trigger
+     * threshold, so what is measured is the EMA itself rather than the masked
+     * update.
+     */
+    @Test
+    fun `background convergence is measured in seconds, not frames`() {
+        val convergence = listOf(2, 5, 10).map { fps ->
+            val scene = SyntheticScene(fps = fps, seed = 23)
+            val model = dk.biomon.insect.core.background.EmaBackgroundModel(
+                TriggerConfig(warmupSeconds = 0, minContrastFraction = 0.5f)
+            )
+            // Settle on the plain scene.
+            repeat(scene.framesFor(5f)) { model.process(scene.frame()) }
+            // Then hold a sub-threshold change and time how long the residual
+            // takes to decay to 1/e of its initial value -- the time constant.
+            val faint = Rect(0, 0, scene.width, scene.height)
+            var initial = -1f
+            var seconds = Float.MAX_VALUE
+            for (i in 0 until scene.framesFor(60f)) {
+                val r = model.process(scene.frame(faint, contrast = 0.05f))
+                val mean = r.residual.average().toFloat()
+                if (i == 0) initial = mean
+                if (initial > 0f && mean <= initial / Math.E.toFloat()) {
+                    seconds = (i + 1).toFloat() / fps
+                    break
+                }
+            }
+            assertTrue(seconds < 60f) { "never converged at $fps fps" }
+            fps to seconds
+        }
+        val values = convergence.map { it.second }
+        val spread = values.max() / values.min()
+        assertTrue(spread < 1.35f) {
+            "background time constant varied with the analysis rate: $convergence"
+        }
+    }
+
+    /**
+     * The forced refresh is the release valve on the masked update, and how long
+     * a moved bait dish pins the model is a duration the operator sets in
+     * seconds. Counting frames instead would make a 120s release valve take five
+     * minutes once thermal backoff halved the rate -- with no record that it had.
+     */
+    @Test
+    fun `forced refresh fires after the configured seconds at any analysis rate`() {
+        val fired = listOf(2, 5, 10).map { fps ->
+            val scene = SyntheticScene(fps = fps, seed = 29)
+            val trigger = MotionTrigger(TriggerConfig(forcedRefreshSeconds = 6, warmupSeconds = 2))
+            warmUp(trigger, scene, seconds = 8f)
+            val moved = Rect.centredOn(320, 240, 40)
+            var seconds = Float.MAX_VALUE
+            for (i in 0 until scene.framesFor(30f)) {
+                if (trigger.onFrame(scene.frame(moved)).forcedRefreshPixels > 0) {
+                    seconds = (i + 1).toFloat() / fps
+                    break
+                }
+            }
+            assertTrue(seconds < 30f) { "forced refresh never fired at $fps fps" }
+            fps to seconds
+        }
+        for ((fps, seconds) in fired) {
+            // One frame of quantisation either side of the configured 6s.
+            assertTrue(seconds in 5.5f..7.0f) {
+                "forced refresh fired at ${seconds}s at $fps fps, not the configured 6s: $fired"
+            }
+        }
+    }
+
+    /**
+     * Deriving the step from timestamps is right, but trusting it without limit
+     * is not: a stream that stalls for five minutes and then delivers one frame
+     * would credit that frame with five minutes of confident observation and
+     * replace the background wholesale. The step is clamped, so the model
+     * forgets slowly after a stall rather than instantly.
+     *
+     * The change here is deliberately sub-threshold so it exercises the ordinary
+     * EMA path rather than the masked one.
+     */
+    @Test
+    fun `a long gap between frames does not wipe the background in one step`() {
+        // minContrastFraction 0.5 puts the threshold far above the change, so
+        // nothing is masked and what is measured is the EMA itself.
+        val config = TriggerConfig(warmupSeconds = 0, minContrastFraction = 0.5f)
+        val model = dk.biomon.insect.core.background.EmaBackgroundModel(config)
+        val scene = SyntheticScene(seed = 31)
+        repeat(scene.framesFor(5f)) { model.process(scene.frame()) }
+        val faint = Rect(0, 0, scene.width, scene.height)
+        val before = model.process(scene.frame(faint, contrast = 0.05f)).residual.average()
+        // A frame arriving five minutes late.
+        val late = scene.frame(faint, contrast = 0.05f)
+        val stalled = AnalysisFrame(
+            late.width, late.height, late.rowStride, late.luma,
+            timestampNs = late.timestampNs + 300_000_000_000L,
+            wallClockMillis = late.wallClockMillis + 300_000,
+            index = late.index,
+        )
+        model.process(stalled)
+        val after = model.process(scene.frame(faint, contrast = 0.05f)).residual.average()
+        // Two clamped seconds against a 10s time constant leave ~80% standing.
+        // Crediting the full 300s would have left essentially nothing.
+        assertTrue(after > before * 0.5) {
+            "a stalled frame collapsed the residual from $before to $after"
         }
     }
 }

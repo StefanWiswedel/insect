@@ -54,7 +54,8 @@ class EventStateMachineTest {
 
     @Test
     fun `a stationary blob drops to the stationary rate and back up on movement`() {
-        val config = CaptureConfig(movingFps = 4f, stationaryFps = 1f, stationaryFrames = 3)
+        // 0.6s of dwell is three analysis frames at the 5fps this test steps at.
+        val config = CaptureConfig(movingFps = 4f, stationaryFps = 1f, stationarySeconds = 0.6f)
         val sm = EventStateMachine(config)
         var now = 0L
         val rateChanges = mutableListOf<EventAction.RateChanged>()
@@ -189,5 +190,146 @@ class EventStateMachineTest {
         assertEquals(1, actions.of<EventAction.CaptureRequested>().size)
         val next = sm.onDecision(decision(120f), 10_100)
         assertEquals(0, next.of<EventAction.CaptureRequested>().size)
+    }
+
+    /**
+     * Feed the machine a blob crossing the frame at [pxPerSecond] for [seconds],
+     * stepping at [fps], and report the mode it settled in and when it changed.
+     */
+    private fun driveAt(
+        fps: Int,
+        pxPerSecond: Float,
+        seconds: Float,
+        config: CaptureConfig,
+        sm: EventStateMachine = EventStateMachine(config),
+    ): Triple<CaptureMode, Long, Int> {
+        val stepMillis = 1000L / fps
+        var now = 0L
+        var x = 20f
+        var changedAt = -1L
+        var captures = 0
+        repeat((seconds * fps).toInt()) { i ->
+            val actions = sm.onDecision(decision(x, index = i.toLong()), now)
+            captures += actions.of<EventAction.CaptureRequested>().size
+            actions.of<EventAction.RateChanged>().firstOrNull()?.let {
+                if (changedAt < 0) changedAt = it.atMillis
+            }
+            x += pxPerSecond * stepMillis / 1000f
+            now += stepMillis
+        }
+        return Triple(sm.currentMode, changedAt, captures)
+    }
+
+    /**
+     * The moving/stationary test is the one place a frame-count constant would
+     * have bitten hardest, because it feeds back into load.
+     *
+     * A blob drifting at 6 px/s covers 1.2px between frames at 5fps but 3px at
+     * 2fps. Against a *per-frame* threshold of 2px that is stationary on a cool
+     * morning and moving on a hot afternoon -- so the moment thermal backoff
+     * halves the analysis rate, feeding insects start reading as moving and hold
+     * capture at 4fps, driving load up exactly when the guard is trying to bring
+     * it down. Against a speed threshold both rates agree.
+     */
+    @Test
+    fun `a slowly drifting blob reads as stationary at every analysis rate`() {
+        val config = CaptureConfig(
+            stationaryDisplacementPxPerSecond = 10f,
+            stationarySeconds = 1f,
+        )
+        for (fps in listOf(2, 3, 5, 10)) {
+            val (mode, _, _) = driveAt(fps, pxPerSecond = 6f, seconds = 4f, config = config)
+            assertEquals(CaptureMode.STATIONARY, mode) {
+                "6 px/s read as $mode at $fps fps"
+            }
+        }
+    }
+
+    @Test
+    fun `a blob above the speed threshold reads as moving at every analysis rate`() {
+        val config = CaptureConfig(
+            stationaryDisplacementPxPerSecond = 10f,
+            stationarySeconds = 1f,
+        )
+        for (fps in listOf(2, 3, 5, 10)) {
+            val (mode, _, _) = driveAt(fps, pxPerSecond = 30f, seconds = 4f, config = config)
+            assertEquals(CaptureMode.MOVING, mode) { "30 px/s read as $mode at $fps fps" }
+        }
+    }
+
+    /**
+     * And the dwell before the rate drops is a duration too: a frame count there
+     * would mean 1s at 5fps and 2.5s at 2fps, so the same visit would be sampled
+     * differently depending on how warm the phone was.
+     */
+    @Test
+    fun `the dwell before the rate drops is the configured seconds at any rate`() {
+        val config = CaptureConfig(
+            stationaryDisplacementPxPerSecond = 10f,
+            stationarySeconds = 1.5f,
+        )
+        for (fps in listOf(2, 4, 5, 10)) {
+            val (_, changedAt, _) = driveAt(fps, pxPerSecond = 0f, seconds = 6f, config = config)
+            assertTrue(changedAt >= 0) { "rate never dropped at $fps fps" }
+            // The first frame has no previous fix, so the dwell can only start
+            // accumulating from the second: one frame of slack either side.
+            val slack = 1000f / fps
+            assertTrue(changedAt.toFloat() in (1500f - slack)..(1500f + 2 * slack)) {
+                "dwell completed at ${changedAt}ms at $fps fps, not the configured 1500ms"
+            }
+        }
+    }
+
+    /**
+     * The stationary capture rate is what the whole adaptive scheme exists to
+     * buy, so it must be delivered in frames-per-second of wall clock rather
+     * than as a fraction of whatever the analysis rate happens to be.
+     */
+    @Test
+    fun `stationary capture yields the configured fps in wall-clock terms`() {
+        val config = CaptureConfig(
+            movingFps = 4f,
+            stationaryFps = 1f,
+            stationaryDisplacementPxPerSecond = 10f,
+            stationarySeconds = 0.5f,
+        )
+        for (fps in listOf(2, 5, 10)) {
+            // 10 seconds parked. Roughly 0.5s at 4fps then 9.5s at 1fps.
+            val (_, _, captures) = driveAt(fps, pxPerSecond = 0f, seconds = 10f, config = config)
+            assertTrue(captures in 9..14) {
+                "expected ~11 captures over 10s parked, got $captures at $fps fps"
+            }
+        }
+    }
+
+    /**
+     * Post-roll is already a duration in the config, and it is checked against
+     * wall-clock timestamps rather than counted down in frames. This pins that
+     * down so it stays that way.
+     */
+    @Test
+    fun `post-roll closes the event after the configured milliseconds at any rate`() {
+        val config = CaptureConfig(postRollMillis = 3_000, movingFps = 4f)
+        for (fps in listOf(2, 5, 10)) {
+            val stepMillis = 1000L / fps
+            val sm = EventStateMachine(config)
+            var now = 0L
+            sm.onDecision(decision(20f), now)
+            val lastMotionAt = now
+            now += stepMillis
+            var endedAt = -1L
+            repeat(fps * 10) { i ->
+                val actions = sm.onDecision(decision(null, index = i.toLong()), now)
+                actions.of<EventAction.EventEnded>().firstOrNull()?.let {
+                    if (endedAt < 0) endedAt = it.endMillis
+                }
+                now += stepMillis
+            }
+            assertTrue(endedAt >= 0) { "event never closed at $fps fps" }
+            val elapsed = endedAt - lastMotionAt
+            assertTrue(elapsed in 3_000..(3_000 + stepMillis)) {
+                "post-roll ran ${elapsed}ms at $fps fps, not the configured 3000ms"
+            }
+        }
     }
 }

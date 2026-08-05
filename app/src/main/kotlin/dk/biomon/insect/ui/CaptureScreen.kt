@@ -297,7 +297,15 @@ private fun Warnings(state: CaptureUiState) {
         }
         when (guard.thermal) {
             ThermalLevel.REDUCED -> Warning(
-                "Thermal backoff: analysis reduced to ${state.analysisFps}fps.",
+                buildString {
+                    append("Thermal backoff: analysis reduced to ${state.analysisFps}fps.")
+                    // Capture is requested from the analysis thread, so it
+                    // inherits the reduction. Say so rather than leaving the
+                    // moving rate on screen as if it were still available.
+                    if (guard.captureBoundByAnalysisRate) {
+                        append(" Capture capped at %.0ffps with it.".format(guard.maxCaptureFps))
+                    }
+                },
                 StateAmber,
             )
             ThermalLevel.STOPPED -> Warning("Too hot: capture stopped.", StateRed)

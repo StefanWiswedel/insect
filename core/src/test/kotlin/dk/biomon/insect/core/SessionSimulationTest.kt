@@ -29,7 +29,7 @@ class SessionSimulationTest {
      */
     @Test
     fun `a five-minute feeding visit costs a fraction of a flat capture rate`() {
-        val config = CaptureConfig(movingFps = 4f, stationaryFps = 1f, stationaryFrames = 5)
+        val config = CaptureConfig(movingFps = 4f, stationaryFps = 1f, stationarySeconds = 1f)
         val sm = EventStateMachine(config)
         val analysisIntervalMs = 200L
         var now = 0L
@@ -113,7 +113,7 @@ class SessionSimulationTest {
     @Test
     fun `an empty scene produces almost no captures over a long run`() {
         val scene = SyntheticScene(seed = 21)
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2), analysisFps = 5)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
         val sm = EventStateMachine(CaptureConfig())
         var now = 0L
         var captured = 0

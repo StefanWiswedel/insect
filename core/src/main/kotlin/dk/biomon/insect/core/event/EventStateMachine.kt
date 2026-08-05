@@ -81,9 +81,11 @@ class EventStateMachine(
     private var frameCount = 0
     private var sequence = 0
     private var mode = CaptureMode.MOVING
-    private var stationaryStreak = 0
+    /** Wall-clock time the blob has been below the speed threshold. */
+    private var stationaryMillis = 0L
     private var lastCentroidX = Float.NaN
     private var lastCentroidY = Float.NaN
+    private var lastCentroidMillis = 0L
     private var lastMotionMillis = 0L
     private var nextCaptureDueMillis = 0L
     /** Set when an event hit the frame cap: no new event until motion actually stops. */
@@ -173,9 +175,10 @@ class EventStateMachine(
         frameCount = 0
         sequence = 0
         mode = CaptureMode.MOVING
-        stationaryStreak = 0
+        stationaryMillis = 0
         lastCentroidX = Float.NaN
         lastCentroidY = Float.NaN
+        lastCentroidMillis = 0
         nextCaptureDueMillis = nowMillis
     }
 
@@ -186,23 +189,40 @@ class EventStateMachine(
         return action
     }
 
+    /**
+     * Decide whether the blob is moving, in **speed** rather than per-frame
+     * displacement.
+     *
+     * Comparing frame-to-frame displacement against a fixed pixel value makes
+     * the test rate-dependent: at 2fps an insect covers 2.5x more ground between
+     * frames than at 5fps, so the same feeding insect reads as moving and holds
+     * capture at full rate -- driving load up at exactly the moment thermal
+     * backoff is trying to bring it down. Speed is rate-invariant.
+     */
     private fun updateMode(blob: Blob, nowMillis: Long, maxFps: Float): List<EventAction> {
-        val displacement = if (lastCentroidX.isNaN()) {
+        val dtMillis = if (lastCentroidMillis == 0L) 0L else nowMillis - lastCentroidMillis
+        val speedPxPerSecond = if (lastCentroidX.isNaN() || dtMillis <= 0L) {
+            // No previous fix, or no time elapsed: treat as moving. A new blob
+            // starts at full rate and has to earn the reduction.
             Float.MAX_VALUE
         } else {
-            hypot(blob.centroidX - lastCentroidX, blob.centroidY - lastCentroidY)
+            val displacement =
+                hypot(blob.centroidX - lastCentroidX, blob.centroidY - lastCentroidY)
+            displacement * 1000f / dtMillis
         }
         lastCentroidX = blob.centroidX
         lastCentroidY = blob.centroidY
+        lastCentroidMillis = nowMillis
 
         val previous = mode
-        if (displacement < config.stationaryDisplacementPx) {
-            stationaryStreak++
-            if (mode == CaptureMode.MOVING && stationaryStreak >= config.stationaryFrames) {
+        if (speedPxPerSecond < config.stationaryDisplacementPxPerSecond) {
+            stationaryMillis += dtMillis
+            val dwellMillis = (config.stationarySeconds * 1000f).toLong()
+            if (mode == CaptureMode.MOVING && stationaryMillis >= dwellMillis) {
                 mode = CaptureMode.STATIONARY
             }
         } else {
-            stationaryStreak = 0
+            stationaryMillis = 0
             if (mode == CaptureMode.STATIONARY) {
                 // Resumed movement: back to full rate immediately, do not wait
                 // for the stationary-rate interval to expire.

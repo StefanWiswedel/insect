@@ -135,6 +135,10 @@ settings.
 | Capture stream | **full sensor resolution, JPEG q85** | q85 is a hard floor: below ~q75 the blocking artefacts inflate blob counts in the laptop's residual. |
 | Capture rate, blob moving | **4fps** | Within the 3-5fps band. Below 3fps in the field, suspect flash write throughput before JPEG encode. |
 | Capture rate, blob stationary | **1fps** | Feeding is where the frames are redundant. Returns to full rate on the next frame of movement. |
+| Stationary speed threshold | **10 px/s** (downsampled) | A *speed*, not a per-frame displacement. See "Durations are durations" below. |
+| Stationary dwell | **1.0s** | How long a blob stays slow before the rate drops. |
+| Background time constant | **10s** | The EMA's convergence time, in seconds. The per-frame α is derived from it and the interval that actually elapsed. |
+| Noise-statistics time constant | **20s** | Same, for the per-region residual mean and sigma. |
 | Post-roll | **5s** | Continued motion extends the same event rather than starting a new one. |
 | `minContrastFraction` | **0.03** | The threshold floor, as a fraction of local brightness. This is what cancels vignetting. |
 | Disk guard | **degrade below 5GB, stop below 1GB** | Degrade = 1fps ceiling and a 1.5x threshold. Stop keeps the service alive so the manifest closes. |
@@ -308,7 +312,7 @@ So the rate varies *within* an event:
 | State | Rate |
 | --- | --- |
 | Blob moving | full, 3–5fps |
-| Blob present but stationary (centroid displacement below threshold across consecutive analysis frames) | 1fps |
+| Blob present but stationary (centroid **speed** below `stationaryDisplacementPxPerSecond` for `stationarySeconds`) | 1fps |
 | Blob resumes movement | full rate, immediately, without waiting out the 1fps interval |
 
 This preserves the whole behavioural sequence — arrival, movement, departure —
@@ -336,9 +340,9 @@ faster than a median.
 Mitigation: **pixels currently flagged foreground are excluded from the
 background update.** A stationary insect therefore stays visible indefinitely
 rather than dissolving. `BackgroundModelTest.stationary target is not absorbed
-into the background` holds a target still for 200 frames (40s at 5fps) and
-asserts it is still detected on the last one; an unmasked EMA at α=0.02 loses it
-in a couple of seconds.
+into the background` holds a target still for 40 seconds and asserts it is still
+detected on the last frame; an unmasked EMA with a 10s time constant loses it in
+a few seconds.
 
 That alone would pin the model forever if the scene genuinely changed — bait
 moved, shadow shifted. So a pixel held foreground for `forcedRefreshSeconds`
@@ -402,6 +406,47 @@ transition. **Non-negotiable #5: a one-hour screen-off test producing correctly
 timestamped, correctly focused, correctly exposed frames is the milestone that
 matters.** Everything else is secondary.
 
+### 3.7 Durations are durations, not frame counts
+
+**The analysis rate is not a constant.** Thermal backoff halves it to a floor of
+2fps, and on a hot Copenhagen afternoon in a closed enclosure that is the normal
+case, not the exception. So any constant that is conceptually about *elapsed
+time* but stored as a frame count means something different in the afternoon than
+it did in the morning — and changes meaning without a manifest record, which is
+non-negotiable #3 broken by arithmetic rather than by omission.
+
+The rule: **anything that answers "how long" is stored in seconds or
+milliseconds and evaluated against frame timestamps.** Specifically —
+
+| Quantity | Expressed as |
+| --- | --- |
+| Trigger warm-up | seconds, against `AnalysisFrame.timestampNs` |
+| Background EMA | a time constant in seconds; per-frame α = `1 − e^(−Δt/τ)` |
+| Per-region noise statistics | the same, with its own time constant |
+| Forced background refresh | milliseconds of accumulated foreground time per pixel |
+| Moving vs stationary | centroid **speed** in px/s, not displacement per frame |
+| Stationary dwell before the rate drops | seconds |
+| Post-roll | milliseconds, against wall clock |
+
+`EmaBackgroundModel` is deliberately **never told the frame rate**. It derives
+every interval from the timestamps it is given, which makes it correct at rates
+nobody anticipated — including a stalled stream, where the step is clamped so one
+late frame cannot be credited with five minutes of confident observation and
+overwrite the background wholesale.
+
+The one deliberate exception is `maxFramesPerEvent` (default 3000). That is a
+storage cap — 3000 frames is 3000 frames' worth of disk whatever rate produced
+them — so a frame count is the correct unit and it is left alone.
+
+**Capture rate is coupled to analysis rate, and this is intended.** Captures are
+requested from the analysis thread, at most one per analysis frame, so capture
+can never exceed the analysis rate: when thermal backoff drops analysis to 2fps,
+the 4fps moving rate becomes 2fps. `GuardState.maxCaptureFps` is therefore
+`min(disk ceiling, analysis rate)` rather than the disk ceiling alone, and
+`captureBoundByAnalysisRate` says which constraint is binding, so the manifest
+records a ceiling that can actually be delivered and the reduction is attributed
+to the thermal guard rather than to storage.
+
 ---
 
 ## 4. Session management
@@ -441,9 +486,11 @@ without any clean shutdown having occurred.
   reason, **keep the service alive** so the session ends cleanly. A full disk
   never crashes the service, and never stops it without recording why.
 - **Thermal backoff:** above 40°C battery temperature the analysis framerate
-  halves (floored at 2fps, below which the centroid displacement test that
-  drives the moving/stationary decision stops meaning anything); above 45°C
-  capture stops but the service stays alive. Every transition is logged.
+  halves (floored at 2fps, below which the interval between centroid fixes is
+  long enough that a feeding insect's own jitter dominates the speed estimate);
+  the capture ceiling follows it down, because capture is requested from the
+  analysis thread (§3.7). Above 45°C capture stops but the service stays alive.
+  Every transition is logged, including the capture ceiling's.
   Transitions carry 2°C of hysteresis so a temperature sitting on a boundary
   cannot flap and fill the manifest with noise. A degraded session is better
   than a lost one.
@@ -493,8 +540,11 @@ matters more here than in most projects.
 **Verified by test, on every commit:**
 
 - The trigger pipeline: background model, local threshold, blob detection.
-- That a stationary target survives 200 analysis frames without being absorbed
-  (§3.3), and that a permanently changed scene does re-baseline afterwards.
+- That a stationary target survives 40 seconds without being absorbed (§3.3),
+  and that a permanently changed scene does re-baseline afterwards.
+- That warm-up, background convergence, forced refresh, the moving/stationary
+  decision, the stationary dwell and post-roll all behave identically in
+  wall-clock terms at 2, 3, 5 and 10fps (§3.7).
 - That local normalisation equalises corner and centre sensitivity, and that a
   global threshold does not (§0.2).
 - Event assembly: post-roll, event extension, the frame cap, the motion-adaptive

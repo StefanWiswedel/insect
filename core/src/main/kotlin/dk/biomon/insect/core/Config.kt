@@ -10,10 +10,25 @@ package dk.biomon.insect.core
 data class TriggerConfig(
     /** Analysis frames are downsampled by this factor before differencing. */
     val downsample: Int = 4,
-    /** EMA learning rate for the background. Smaller adapts more slowly. */
-    val backgroundAlpha: Float = 0.02f,
-    /** EMA learning rate for per-region noise statistics. */
-    val noiseAlpha: Float = 0.01f,
+    /**
+     * Time constant of the background EMA, in seconds.
+     *
+     * Expressed as a duration, not a per-frame learning rate. A fixed per-frame
+     * alpha has a time constant of ~1/alpha *frames*, so thermal backoff from
+     * 5fps to 2fps would make the background adapt 2.5x slower in wall-clock
+     * terms -- which directly changes how long a stationary insect survives
+     * before being absorbed, the success-paradox failure DESIGN.md 3.3 exists to
+     * prevent. The per-frame alpha is derived from this and the actual interval
+     * between frames.
+     *
+     * 10s matches the old 0.02-per-frame default at 5fps.
+     */
+    val backgroundTimeConstantSeconds: Float = 10f,
+    /**
+     * Time constant of the per-region noise statistics, in seconds. Same
+     * reasoning; 20s matches the old 0.01-per-frame default at 5fps.
+     */
+    val noiseTimeConstantSeconds: Float = 20f,
     /** Threshold = regionMean + [noiseSigmas] * regionSigma, floored below. */
     val noiseSigmas: Float = 4.0f,
     /**
@@ -75,8 +90,8 @@ data class TriggerConfig(
 ) {
     init {
         require(downsample >= 1) { "downsample must be >= 1" }
-        require(backgroundAlpha > 0f && backgroundAlpha <= 1f)
-        require(noiseAlpha > 0f && noiseAlpha <= 1f)
+        require(backgroundTimeConstantSeconds > 0f)
+        require(noiseTimeConstantSeconds > 0f)
         require(regionGridCols >= 1 && regionGridRows >= 1)
         require(minThreshold > 0f && maxThreshold >= minThreshold)
         require(minContrastFraction >= 0f && minContrastFraction < 1f)
@@ -93,12 +108,22 @@ data class CaptureConfig(
     /** Capture rate while a blob is present but stationary. */
     val stationaryFps: Float = 1f,
     /**
-     * Centroid displacement, in downsampled pixels, below which a blob counts as
-     * stationary.
+     * Centroid speed, in downsampled pixels **per second**, below which a blob
+     * counts as stationary.
+     *
+     * Per second rather than per frame: at 2fps an insect covers 2.5x more
+     * ground between frames than at 5fps, so a per-frame threshold would read a
+     * feeding insect as moving and hold capture at full rate -- pushing load up
+     * at exactly the moment thermal backoff is trying to reduce it.
+     *
+     * 10 px/s matches the old 2px-per-frame default at 5fps.
      */
-    val stationaryDisplacementPx: Float = 2.0f,
-    /** Consecutive stationary analysis frames before dropping to [stationaryFps]. */
-    val stationaryFrames: Int = 5,
+    val stationaryDisplacementPxPerSecond: Float = 10f,
+    /**
+     * How long a blob must stay slow before the capture rate drops. A frame
+     * count here would mean 1s on a cool morning and 2.5s on a hot afternoon.
+     */
+    val stationarySeconds: Float = 1.0f,
     /** Capture continues this long after motion ceases. */
     val postRollMillis: Long = 5_000,
     /** JPEG quality. Below ~q75 blocking artefacts inflate laptop-side blob counts. */
@@ -109,6 +134,8 @@ data class CaptureConfig(
     init {
         require(analysisFps in 1..30)
         require(movingFps > 0f && stationaryFps > 0f)
+        require(stationaryDisplacementPxPerSecond > 0f)
+        require(stationarySeconds >= 0f)
         require(jpegQuality >= 85) { "DESIGN.md 3.4 sets a q85 floor" }
     }
 }

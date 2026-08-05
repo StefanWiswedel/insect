@@ -3,6 +3,7 @@ package dk.biomon.insect.core.background
 import dk.biomon.insect.core.AnalysisFrame
 import dk.biomon.insect.core.TriggerConfig
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -65,13 +66,19 @@ class BackgroundResult(
  */
 class EmaBackgroundModel(
     private val config: TriggerConfig,
-    analysisFps: Int,
 ) {
-    private val forcedRefreshFrames: Int =
-        max(1, config.forcedRefreshSeconds * max(1, analysisFps))
-
-    /** Warm-up is configured in seconds; the model counts frames. */
-    private val warmupFrames: Int = config.warmupSeconds * max(1, analysisFps)
+    /**
+     * Everything below is measured against frame timestamps rather than frame
+     * counts, and the model is never told what the frame rate is.
+     *
+     * That is deliberate. Any constant expressed in frames silently changes
+     * meaning when the rate does -- and the rate is not constant here, because
+     * thermal backoff halves it to a floor of 2fps on a hot afternoon. Deriving
+     * from timestamps makes the model correct at any rate, including rates
+     * nobody anticipated, and including a stalled stream.
+     */
+    private var lastTimestampNs = 0L
+    private var firstTimestampNs = 0L
 
     private var workWidth = 0
     private var workHeight = 0
@@ -81,7 +88,8 @@ class EmaBackgroundModel(
     private lateinit var residual: FloatArray
     private lateinit var threshold: FloatArray
     private lateinit var mask: BooleanArray
-    private lateinit var stuckFrames: IntArray
+    /** Milliseconds each pixel has been continuously foreground. */
+    private lateinit var stuckMillis: IntArray
 
     /** Per-cell EMA of residual mean and of residual squared, background pixels only. */
     private lateinit var regionMean: FloatArray
@@ -116,8 +124,21 @@ class EmaBackgroundModel(
 
         downsample(frame, ds)
 
+        // Seconds since the previous frame, from the sensor clock. Clamped so a
+        // stall cannot wipe the background in one step: a ten-second gap should
+        // not be treated as ten seconds of confident observation.
+        val dtSeconds = if (lastTimestampNs == 0L) {
+            0f
+        } else {
+            ((frame.timestampNs - lastTimestampNs).coerceAtLeast(0L) / 1e9)
+                .toFloat()
+                .coerceAtMost(MAX_STEP_SECONDS)
+        }
+        lastTimestampNs = frame.timestampNs
+
         framesSeen++
         if (framesSeen == 1L) {
+            firstTimestampNs = frame.timestampNs
             System.arraycopy(current, 0, background, 0, current.size)
             java.util.Arrays.fill(mask, false)
             java.util.Arrays.fill(residual, 0f)
@@ -141,24 +162,31 @@ class EmaBackgroundModel(
             if (hot) foreground++
         }
 
-        val warming = framesSeen <= warmupFrames
+        val elapsedSeconds = (frame.timestampNs - firstTimestampNs) / 1e9
+        val warming = elapsedSeconds < config.warmupSeconds
         var forced = 0
-        val alpha = config.backgroundAlpha
+        // Per-frame alpha from the target time constant and the interval that
+        // actually elapsed, so the background converges at the same wall-clock
+        // rate whatever the analysis rate is doing.
+        val alpha = alphaFor(config.backgroundTimeConstantSeconds, dtSeconds)
+        val dtMillis = (dtSeconds * 1000f).toInt()
+        val forcedRefreshMillis = config.forcedRefreshSeconds * 1000
         for (i in current.indices) {
             if (mask[i] && !warming) {
                 // Foreground: hold the background, but do not hold it forever.
-                if (++stuckFrames[i] >= forcedRefreshFrames) {
+                stuckMillis[i] += dtMillis
+                if (stuckMillis[i] >= forcedRefreshMillis) {
                     background[i] = current[i]
-                    stuckFrames[i] = 0
+                    stuckMillis[i] = 0
                     forced++
                 }
             } else {
-                stuckFrames[i] = 0
+                stuckMillis[i] = 0
                 background[i] += alpha * (current[i] - background[i])
             }
         }
 
-        updateRegionStats()
+        updateRegionStats(dtSeconds)
 
         result.warmingUp = warming
         result.forcedRefreshPixels = forced
@@ -166,11 +194,24 @@ class EmaBackgroundModel(
         return result
     }
 
+    /**
+     * Exponential smoothing factor for an elapsed interval and a target time
+     * constant: `1 - e^(-dt/tau)`. At dt == tau this is 0.63, and it degrades
+     * gracefully at both ends -- a zero interval changes nothing, a long one
+     * approaches (but never exceeds) a full replacement.
+     */
+    private fun alphaFor(timeConstantSeconds: Float, dtSeconds: Float): Float {
+        if (dtSeconds <= 0f) return 0f
+        return 1f - exp(-dtSeconds / timeConstantSeconds)
+    }
+
     /** Drop all state. Used after a camera restart, where the scene may have moved. */
     fun reset() {
         framesSeen = 0
+        lastTimestampNs = 0
+        firstTimestampNs = 0
         if (workWidth > 0) {
-            java.util.Arrays.fill(stuckFrames, 0)
+            java.util.Arrays.fill(stuckMillis, 0)
             java.util.Arrays.fill(regionMean, 0f)
             java.util.Arrays.fill(regionMeanSq, 0f)
         }
@@ -185,7 +226,7 @@ class EmaBackgroundModel(
         residual = FloatArray(n)
         threshold = FloatArray(n) { config.minThreshold }
         mask = BooleanArray(n)
-        stuckFrames = IntArray(n)
+        stuckMillis = IntArray(n)
         val cells = config.regionGridCols * config.regionGridRows
         regionMean = FloatArray(cells)
         regionMeanSq = FloatArray(cells)
@@ -288,7 +329,7 @@ class EmaBackgroundModel(
     }
 
     /** Fold this frame's background-pixel residuals into the per-cell statistics. */
-    private fun updateRegionStats() {
+    private fun updateRegionStats(dtSeconds: Float) {
         val cols = config.regionGridCols
         val rows = config.regionGridRows
         val cellW = workWidth.toFloat() / cols
@@ -312,7 +353,7 @@ class EmaBackgroundModel(
                 i++
             }
         }
-        val a = config.noiseAlpha
+        val a = alphaFor(config.noiseTimeConstantSeconds, dtSeconds)
         for (c in 0 until cells) {
             if (count[c] == 0) continue // wholly foreground cell: keep prior stats
             val n = count[c].toFloat()
@@ -326,5 +367,14 @@ class EmaBackgroundModel(
                 regionMeanSq[c] += a * (meanSq - regionMeanSq[c])
             }
         }
+    }
+
+    private companion object {
+        /**
+         * Longest interval treated as real. Beyond this the stream stalled, and
+         * crediting the gap in full would let one late frame overwrite the
+         * background wholesale.
+         */
+        const val MAX_STEP_SECONDS = 2f
     }
 }

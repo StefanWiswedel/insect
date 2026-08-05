@@ -44,10 +44,25 @@ data class GuardState(
     val temperatureCelsius: Float,
     /** False when capture must stop. The service stays alive regardless. */
     val captureAllowed: Boolean,
-    /** Ceiling on capture rate, in fps. */
+    /**
+     * Ceiling on capture rate, in fps.
+     *
+     * This is the *achievable* ceiling, not the wished-for one. Captures are
+     * requested from the analysis thread, one per analysis frame at most, so the
+     * capture rate can never exceed [analysisFps] however high the disk tier
+     * allows. Reporting the disk tier alone would put `maxFps=4.0` in the
+     * manifest during a thermal backoff that has already capped capture at 2fps
+     * -- a degradation the record would not show (non-negotiable #3).
+     */
     val maxCaptureFps: Float,
     /** Analysis stream framerate after thermal backoff. */
     val analysisFps: Int,
+    /**
+     * True when [analysisFps], not the disk tier, is what is holding capture
+     * down. Surfaced so the UI and the manifest attribute the reduction to the
+     * thermal guard rather than to storage.
+     */
+    val captureBoundByAnalysisRate: Boolean,
     /** Multiplier applied to the trigger threshold to become more selective. */
     val thresholdMultiplier: Float,
     val stopReason: StopReason,
@@ -61,6 +76,7 @@ data class GuardState(
         append(" batt=").append(batteryPercent).append('%')
         append(" capture=").append(if (captureAllowed) "on" else "off")
         append(" maxFps=").append(maxCaptureFps)
+        if (captureBoundByAnalysisRate) append("(analysis-bound)")
         append(" analysisFps=").append(analysisFps)
         append(" thr=x").append(thresholdMultiplier)
     }
@@ -87,6 +103,7 @@ class GuardEvaluator(
 ) {
     private var lastThermal = ThermalLevel.NOMINAL
     private var lastDisk = DiskLevel.NORMAL
+    private var lastAnalysisBound = false
 
     /** Level changes since the previous evaluation, ready for the manifest. */
     var lastTransitions: List<String> = emptyList()
@@ -128,17 +145,32 @@ class GuardEvaluator(
             else -> StopReason.NONE
         }
 
-        val maxFps = when (disk) {
+        val diskCeiling = when (disk) {
             DiskLevel.NORMAL -> capture.movingFps
             DiskLevel.DEGRADED -> guards.degradedMaxFps
             DiskLevel.STOPPED -> 0f
         }
         val analysisFps = when (thermal) {
             ThermalLevel.NOMINAL -> capture.analysisFps
-            // Halved, floored at 2fps: below that the centroid displacement test
-            // that drives the moving/stationary decision stops being meaningful.
+            // Halved, floored at 2fps: below that the interval between centroid
+            // fixes is long enough that a feeding insect's own jitter dominates
+            // the speed estimate.
             ThermalLevel.REDUCED -> (capture.analysisFps / 2).coerceAtLeast(2)
             ThermalLevel.STOPPED -> 1
+        }
+        // Capture is driven from the analysis thread, so it inherits any
+        // reduction in the analysis rate whether or not the disk tier asked for
+        // one. Making that explicit here means the ceiling in the manifest is the
+        // rate that can actually be delivered.
+        val maxFps = minOf(diskCeiling, analysisFps.toFloat())
+        val analysisBound = disk != DiskLevel.STOPPED && analysisFps.toFloat() < diskCeiling
+        if (analysisBound != lastAnalysisBound) {
+            transitions += if (analysisBound) {
+                "capture ceiling $diskCeiling -> $maxFps fps (bound by analysis rate ${analysisFps}fps)"
+            } else {
+                "capture ceiling released back to $maxFps fps (analysis rate ${analysisFps}fps)"
+            }
+            lastAnalysisBound = analysisBound
         }
         val multiplier = when (disk) {
             DiskLevel.DEGRADED -> trigger.diskPressureThresholdMultiplier
@@ -155,6 +187,7 @@ class GuardEvaluator(
             captureAllowed = stopReason == StopReason.NONE,
             maxCaptureFps = maxFps,
             analysisFps = analysisFps,
+            captureBoundByAnalysisRate = analysisBound,
             thresholdMultiplier = multiplier,
             stopReason = stopReason,
         )

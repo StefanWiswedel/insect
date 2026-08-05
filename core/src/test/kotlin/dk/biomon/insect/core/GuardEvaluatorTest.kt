@@ -136,4 +136,60 @@ class GuardEvaluatorTest {
         assertEquals(ThermalLevel.NOMINAL, s.thermal)
         assertEquals(5, s.analysisFps)
     }
+
+    /**
+     * Capture requests are issued from the analysis thread, one per analysis
+     * frame at most, so the capture rate can never exceed the analysis rate.
+     * That coupling is real and intended -- but it has to be *stated*, or the
+     * manifest records a 4fps ceiling through a thermal backoff that has already
+     * capped capture at 2fps, and the reduction never appears anywhere.
+     */
+    @Test
+    fun `thermal backoff of the analysis rate lowers the capture ceiling with it`() {
+        val e = evaluator()
+        val nominal = e.evaluate(20 * gb, 80, 28f)
+        assertEquals(4f, nominal.maxCaptureFps)
+        assertFalse(nominal.captureBoundByAnalysisRate)
+
+        // 41C halves analysis to 2fps. Capture cannot outrun it.
+        val hot = e.evaluate(20 * gb, 80, 41f)
+        assertEquals(2, hot.analysisFps)
+        assertEquals(2f, hot.maxCaptureFps) {
+            "capture ceiling stayed at ${hot.maxCaptureFps} while analysis dropped to 2fps"
+        }
+        assertTrue(hot.captureBoundByAnalysisRate)
+        assertTrue(hot.describe().contains("analysis-bound")) { hot.describe() }
+    }
+
+    @Test
+    fun `the analysis-bound capture ceiling is logged when it engages and when it lifts`() {
+        val e = evaluator()
+        e.evaluate(20 * gb, 80, 28f)
+        assertTrue(e.lastTransitions.isEmpty())
+
+        e.evaluate(20 * gb, 80, 41f)
+        assertTrue(e.lastTransitions.any { it.contains("bound by analysis rate") }) {
+            "the capture ceiling dropped without a manifest record: ${e.lastTransitions}"
+        }
+        e.evaluate(20 * gb, 80, 41f)
+        assertTrue(e.lastTransitions.isEmpty()) { "steady state must not re-log" }
+
+        // Cooled past the hysteresis band: the ceiling is released, and that is
+        // recorded too.
+        e.evaluate(20 * gb, 80, 30f)
+        assertTrue(e.lastTransitions.any { it.contains("released") }) {
+            "the ceiling recovered silently: ${e.lastTransitions}"
+        }
+    }
+
+    /**
+     * The disk tier can still be the binding constraint. When it is, the state
+     * must not blame the analysis rate for it.
+     */
+    @Test
+    fun `disk pressure below the analysis rate is not attributed to the analysis rate`() {
+        val s = evaluator().evaluate(3 * gb, 80, 30f)
+        assertEquals(1f, s.maxCaptureFps)
+        assertFalse(s.captureBoundByAnalysisRate)
+    }
 }

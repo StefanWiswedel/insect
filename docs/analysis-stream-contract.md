@@ -24,6 +24,15 @@ The types live in `:core`: `dk.biomon.insect.core.AnalysisFrame`,
   `luma[y * rowStride + x]`.
 - Luma bytes are **unsigned**. Use `AnalysisFrame.lumaAt`, or
   `luma[i].toInt() and 0xFF`.
+- `timestampNs` is **load-bearing, not decoration**. Every duration B holds —
+  warm-up, background convergence, forced refresh, the moving/stationary speed
+  test — is derived from the interval between consecutive `timestampNs` values,
+  because the analysis rate is not constant (thermal backoff halves it). A must
+  pass `CaptureResult.SENSOR_TIMESTAMP` through unmodified: same monotonic
+  clock, same units, never synthesised from a frame counter, never reset except
+  across a `MotionTrigger.reset()`. B clamps implausibly long steps rather than
+  trusting them, so a stall degrades gracefully, but a *wrong* timestamp
+  silently rescales the whole trigger.
 
 ## Ownership
 
@@ -61,9 +70,9 @@ dropped.
 
 | Event | A does | B does |
 | --- | --- | --- |
-| Session start | configure session, lock focus/WB/OIS, start repeating request | construct `MotionTrigger`, warm up over `warmupFrames` |
+| Session start | configure session, lock focus/WB/OIS, start repeating request | construct `MotionTrigger`, warm up over `warmupSeconds` |
 | Camera error / restart | tear down, rebuild session, log `ErrorRecord` | `MotionTrigger.reset()` — the scene may have moved |
-| Thermal backoff | reduce repeating-request cadence | nothing; it just sees fewer frames |
+| Thermal backoff | reduce repeating-request cadence | nothing; it just sees fewer frames, and every duration it holds is measured against `timestampNs` rather than counted in frames (DESIGN.md 3.7) |
 | Capture stopped by a guard | keep the analysis stream running | `EventStateMachine.onDecision(captureAllowed = false)` closes the open event with its reason |
 | Session stop | stop repeating request, close session | `EventStateMachine.close(reason)` |
 

@@ -37,9 +37,11 @@ data class TriggerDecision(
  */
 class MotionTrigger(
     private val config: TriggerConfig,
-    analysisFps: Int,
 ) {
-    private val background = EmaBackgroundModel(config, analysisFps)
+    // Deliberately not told the analysis rate: the background model derives every
+    // interval from frame timestamps, so it stays correct when thermal backoff
+    // moves the rate underneath it.
+    private val background = EmaBackgroundModel(config)
     private val detector = BlobDetector(config.minBlobAreaPx, config.maxBlobAreaFraction)
 
     /**

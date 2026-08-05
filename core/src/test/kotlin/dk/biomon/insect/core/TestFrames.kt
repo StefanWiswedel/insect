@@ -27,8 +27,20 @@ class SyntheticScene(
     private val cornerFalloff: Float = 0.32f,
     /** Noise sigma at the centre; elsewhere it scales as sqrt(luma). */
     private val centreNoiseSigma: Float = 2.5f,
+    /**
+     * Rate the frames are stamped at.
+     *
+     * Configurable because the analysis rate is not a constant in the field --
+     * thermal backoff halves it to a floor of 2fps -- and the tests that matter
+     * most here are the ones that run the same wall-clock scenario at two rates
+     * and assert the same outcome.
+     */
+    val fps: Int = 5,
     seed: Long = 42,
 ) {
+    /** Nanoseconds between frames at [fps]. */
+    val frameIntervalNs: Long = 1_000_000_000L / fps
+
     private val random = Random(seed)
     private val base = FloatArray(width * height)
     private val buffer = ByteArray(width * height)
@@ -51,6 +63,9 @@ class SyntheticScene(
 
     /** Luma of the static scene at (x, y), before noise. */
     fun baseLuma(x: Int, y: Int): Float = base[y * width + x]
+
+    /** How many frames at [fps] cover [seconds] of wall clock. */
+    fun framesFor(seconds: Float): Int = Math.round(seconds * fps)
 
     /**
      * Render one frame.
@@ -79,8 +94,8 @@ class SyntheticScene(
             height = height,
             rowStride = width,
             luma = buffer,
-            timestampNs = index * 200_000_000L,
-            wallClockMillis = 1_700_000_000_000L + index * 200,
+            timestampNs = index * frameIntervalNs,
+            wallClockMillis = 1_700_000_000_000L + index * (frameIntervalNs / 1_000_000L),
             index = index++,
         )
     }
