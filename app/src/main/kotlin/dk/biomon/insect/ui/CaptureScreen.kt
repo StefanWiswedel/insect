@@ -55,7 +55,10 @@ import kotlinx.coroutines.launch
 fun CaptureScreen(
     settingsRepository: SettingsRepository,
     permissionsGranted: Boolean,
+    storageFallback: Boolean,
+    plannedStoragePath: String,
     onRequestPermissions: () -> Unit,
+    onRequestAllFilesAccess: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val state by CaptureBus.state.collectAsStateWithLifecycle()
@@ -111,6 +114,7 @@ fun CaptureScreen(
                 }
             }
             Warnings(state)
+            StorageState(state, storageFallback, plannedStoragePath, onRequestAllFilesAccess)
             Readings(state)
 
             Button(
@@ -233,6 +237,45 @@ private fun StatusHeader(state: CaptureUiState) {
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * Where the frames are going, and a loud warning when it is not where it should
+ * be.
+ *
+ * On the face of the screen rather than in a file manager: writing to
+ * app-specific storage means the frames vanish on uninstall and never appear
+ * over USB, and discovering that after a nine-hour deployment is discovering it
+ * too late.
+ */
+@Composable
+private fun StorageState(
+    state: CaptureUiState,
+    permissionFallback: Boolean,
+    plannedPath: String,
+    onRequestAllFilesAccess: () -> Unit,
+) {
+    // Prefer where the running session actually landed over where the next one
+    // is predicted to land.
+    val path = state.storagePath ?: plannedPath
+    val fallback = if (state.running) state.storageFallback else permissionFallback
+
+    Reading("Storage", if (fallback) "fallback" else "DCIM/Biomon")
+    Text(
+        text = path,
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = FontFamily.Monospace,
+        color = if (fallback) StateAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (fallback) {
+        Warning(
+            "Writing to app-specific storage: these frames are DELETED if the app " +
+                "is uninstalled, and will not appear over USB or in the gallery. " +
+                "Grant All Files Access, then restart the session.",
+            StateAmber,
+        )
+        TextButton(onClick = onRequestAllFilesAccess) { Text("Grant All Files Access") }
     }
 }
 

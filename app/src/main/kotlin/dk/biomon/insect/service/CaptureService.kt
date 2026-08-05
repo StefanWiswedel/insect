@@ -121,6 +121,9 @@ class CaptureService : Service() {
                 sessionId = recorder.session.sessionId,
                 analysisFps = settings.capture.analysisFps,
                 focusDistanceDiopters = settings.focusDistanceDiopters,
+                // Where it actually landed, not where it was meant to.
+                storagePath = recorder.session.directory.absolutePath,
+                storageFallback = !SessionStore.hasSharedStorage(),
             )
         }
 

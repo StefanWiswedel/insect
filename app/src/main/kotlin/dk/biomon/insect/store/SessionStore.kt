@@ -76,7 +76,18 @@ object SessionStore {
      * Where sessions will be written, for the UI to show before a session starts.
      * Same decision procedure as [open], without creating anything.
      */
-    fun plannedRoot(context: Context): File = sessionsRoot(chooseRoot(context, ArrayList()))
+    /**
+     * Where sessions will land, for display. Permission check only -- no probe
+     * write, because this is read during composition.
+     */
+    fun plannedRootForDisplay(context: Context): File =
+        if (hasSharedStorage()) {
+            File(Environment.getExternalStorageDirectory(), SHARED_ROOT_NAME)
+        } else {
+            sessionsRoot(context.getExternalFilesDir(null) ?: context.filesDir)
+        }
+
+    fun plannedRoot(context: Context): File = sessionsRoot(chooseRoot(context, StorageNotes()))
 
     /**
      * Sessions sit directly under the shared root -- `DCIM/Biomon/<id>/` -- but
@@ -91,11 +102,22 @@ object SessionStore {
     fun hasSharedStorage(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
 
+    /**
+     * Storage notes gathered before there is anywhere to write them.
+     *
+     * Split because they are not the same kind of thing: falling back to
+     * app-specific storage is a *degradation* -- the app doing less than it was
+     * asked to, which is non-negotiable #3 -- while failing to create a
+     * directory is an error.
+     */
+    private class StorageNotes {
+        val degradations = ArrayList<String>(2)
+        val errors = ArrayList<String>(2)
+    }
+
     fun open(context: Context, settings: AppSettings): SessionRecorder {
         val startedAt = System.currentTimeMillis()
-        // Notes accumulate before there is anywhere to write them; they go into
-        // the manifest as soon as one exists, so a fallback is never invisible.
-        val notes = ArrayList<String>(2)
+        val notes = StorageNotes()
 
         val root = chooseRoot(context, notes)
         val sessionsRoot = sessionsRoot(root)
@@ -103,11 +125,11 @@ object SessionStore {
         val directory = File(sessionsRoot, sessionId)
 
         if (!directory.exists() && !directory.mkdirs()) {
-            notes += "could not create session directory ${directory.absolutePath}"
+            notes.errors += "could not create session directory ${directory.absolutePath}"
         }
         val framesDir = File(directory, SessionLayout.FRAMES_DIR)
         if (!framesDir.exists() && !framesDir.mkdirs()) {
-            notes += "could not create frames directory ${framesDir.absolutePath}"
+            notes.errors += "could not create frames directory ${framesDir.absolutePath}"
         }
 
         val manifest = ManifestWriter(File(directory, SessionLayout.MANIFEST_FILE))
@@ -124,8 +146,22 @@ object SessionStore {
         val scanner = if (hasSharedStorage()) MediaScanner(context) else null
         val recorder = FileSessionRecorder(session, manifest, database, scanner)
 
-        for (note in notes) {
-            manifest.append(ErrorRecord(startedAt, "storage", note, recovered = true))
+        // Through the recorder, not straight at the manifest: recorder.record()
+        // also feeds SUMMARY.md, and a fallback that appears only in the JSONL
+        // is a fallback nobody reading the summary would ever notice.
+        recorder.record(
+            Degradation(
+                startedAt,
+                "storage",
+                "writing to ${directory.absolutePath}" +
+                    if (hasSharedStorage()) "" else " (FALLBACK, app-specific storage)",
+            )
+        )
+        for (note in notes.degradations) {
+            recorder.record(Degradation(startedAt, "storage", note))
+        }
+        for (note in notes.errors) {
+            recorder.record(ErrorRecord(startedAt, "storage", note, recovered = true))
         }
 
         // Pre-flight the disk guard rather than waiting for the first sample: if
@@ -134,7 +170,7 @@ object SessionStore {
         // instead of being inferred later from an empty frames directory.
         val free = recorder.freeBytes()
         if (free < settings.guards.stopFreeBytes) {
-            manifest.append(
+            recorder.record(
                 Degradation(
                     startedAt,
                     "disk",
@@ -143,7 +179,7 @@ object SessionStore {
                 )
             )
         } else if (free < settings.guards.degradeFreeBytes) {
-            manifest.append(
+            recorder.record(
                 Degradation(
                     startedAt,
                     "disk",
@@ -172,14 +208,14 @@ object SessionStore {
      * actual write. It costs one file once per session and it is the difference
      * between discovering the problem now and discovering it nine hours later.
      */
-    private fun chooseRoot(context: Context, notes: MutableList<String>): File {
+    private fun chooseRoot(context: Context, notes: StorageNotes): File {
         if (hasSharedStorage()) {
             val shared = File(Environment.getExternalStorageDirectory(), SHARED_ROOT_NAME)
             if (probeWritable(shared)) return shared
-            notes += "All Files Access is granted but ${shared.absolutePath} is not " +
+            notes.degradations += "All Files Access is granted but ${shared.absolutePath} is not " +
                 "writable; falling back to app-specific storage"
         } else {
-            notes += "All Files Access not granted: sessions are going to " +
+            notes.degradations += "All Files Access not granted: sessions are going to " +
                 "app-specific storage, which is DELETED IF THE APP IS UNINSTALLED " +
                 "and will not appear over MTP. Grant it and restart the session to " +
                 "write to /" + SHARED_ROOT_NAME + " instead."
@@ -188,11 +224,11 @@ object SessionStore {
         val external = try {
             context.getExternalFilesDir(null)
         } catch (t: Throwable) {
-            notes += "getExternalFilesDir failed: ${t.javaClass.simpleName}: ${t.message}"
+            notes.errors += "getExternalFilesDir failed: ${t.javaClass.simpleName}: ${t.message}"
             null
         }
         if (external == null) {
-            notes += "no external app-specific directory; falling back to internal storage"
+            notes.degradations += "no external app-specific directory; falling back to internal storage"
             return context.filesDir
         }
         val state = try {
@@ -201,11 +237,11 @@ object SessionStore {
             "unknown(${t.javaClass.simpleName})"
         }
         if (state != Environment.MEDIA_MOUNTED) {
-            notes += "external storage state=$state; falling back to internal storage"
+            notes.degradations += "external storage state=$state; falling back to internal storage"
             return context.filesDir
         }
         if (!probeWritable(external)) {
-            notes += "external storage ${external.absolutePath} is not writable; " +
+            notes.degradations += "external storage ${external.absolutePath} is not writable; " +
                 "falling back to internal storage"
             return context.filesDir
         }
@@ -235,9 +271,9 @@ object SessionStore {
      * directory, so the index is advanced past anything that already exists even
      * if the scan came back empty because the directory could not be listed.
      */
-    private fun allocateSessionId(sessionsRoot: File, notes: MutableList<String>): String {
+    private fun allocateSessionId(sessionsRoot: File, notes: StorageNotes): String {
         if (!sessionsRoot.exists() && !sessionsRoot.mkdirs()) {
-            notes += "could not create ${sessionsRoot.absolutePath}"
+            notes.errors += "could not create ${sessionsRoot.absolutePath}"
         }
         val today = try {
             LocalDate.now()
@@ -253,7 +289,7 @@ object SessionStore {
             null
         }
         if (existing == null) {
-            notes += "could not list ${sessionsRoot.absolutePath}; session index may restart"
+            notes.errors += "could not list ${sessionsRoot.absolutePath}; session index may restart"
         } else {
             for (name in existing) {
                 if (!name.startsWith(prefix)) continue

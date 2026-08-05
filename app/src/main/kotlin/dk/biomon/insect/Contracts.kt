@@ -139,6 +139,10 @@ data class CaptureUiState(
     /** Null when idle; otherwise "moving" or "stationary". */
     val captureMode: String? = null,
     val activeEventId: Long? = null,
+    /** Absolute path of the running session's directory, once one exists. */
+    val storagePath: String? = null,
+    /** True when the session is writing to app-specific fallback storage. */
+    val storageFallback: Boolean = false,
     val mask: MaskSnapshot? = null,
     val preview: PreviewFrame? = null,
     /** Most recent recorded error, so a degraded session is visible at a glance. */

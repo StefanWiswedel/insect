@@ -23,6 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import dk.biomon.insect.store.SessionStore
 
 /**
  * The only Activity, and it is incidental.
@@ -60,7 +61,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             BiomonTheme {
                 var showSettings by remember { mutableStateOf(false) }
-                var askedThisLaunch by remember { mutableStateOf(false) }
+                // One flag per prompt. A single shared flag meant answering the
+                // battery prompt suppressed the storage prompt for the rest of
+                // the launch, so on a fresh install the storage permission was
+                // never actually asked for -- which is why sessions kept landing
+                // in the fallback directory.
+                var askedBattery by remember { mutableStateOf(false) }
+                var askedStorage by remember { mutableStateOf(false) }
                 val settings = remember { SettingsStore.get(applicationContext) }
 
                 if (showSettings) {
@@ -69,7 +76,11 @@ class MainActivity : ComponentActivity() {
                     CaptureScreen(
                         settingsRepository = settings,
                         permissionsGranted = permissionsGranted,
+                        storageFallback = !allFilesAccess,
+                        plannedStoragePath = SessionStore
+                            .plannedRootForDisplay(applicationContext).absolutePath,
                         onRequestPermissions = { requestPermissions.launch(requiredPermissions()) },
+                        onRequestAllFilesAccess = { requestAllFilesAccess() },
                         onOpenSettings = { showSettings = true },
                     )
                 }
@@ -77,7 +88,7 @@ class MainActivity : ComponentActivity() {
                 // Asked up front rather than shown as a banner: a throttled
                 // session is a lost day, and a banner on a screen nobody scrolls
                 // is the same as no warning at all.
-                if (!batteryExempt && !askedThisLaunch) {
+                if (!batteryExempt && !askedBattery) {
                     SetupDialog(
                         title = "Allow unrestricted battery use",
                         body = "A deployment runs for nine hours with the screen off. " +
@@ -87,12 +98,12 @@ class MainActivity : ComponentActivity() {
                             "was run to answer.",
                         confirm = "Open settings",
                         onConfirm = {
-                            askedThisLaunch = true
+                            askedBattery = true
                             requestBatteryExemption()
                         },
-                        onDismiss = { askedThisLaunch = true },
+                        onDismiss = { askedBattery = true },
                     )
-                } else if (!allFilesAccess && !askedThisLaunch) {
+                } else if (!allFilesAccess && !askedStorage) {
                     SetupDialog(
                         title = "Allow access to all files",
                         body = "Without this, sessions are written to app-specific " +
@@ -102,10 +113,10 @@ class MainActivity : ComponentActivity() {
                             "gallery and over USB, and survive a reinstall.",
                         confirm = "Open settings",
                         onConfirm = {
-                            askedThisLaunch = true
+                            askedStorage = true
                             requestAllFilesAccess()
                         },
-                        onDismiss = { askedThisLaunch = true },
+                        onDismiss = { askedStorage = true },
                     )
                 }
             }
