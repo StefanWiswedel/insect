@@ -66,6 +66,18 @@ decision. A gap at B is exactly the number of frames dropped. A logs the gap as 
 `Degradation(kind = "dropped_frames")`. Non-negotiable #3: nothing is silently
 dropped.
 
+The same rule governs oversized blobs. B excludes anything over
+`illuminationAreaFraction` from its blob list, but reports it as
+`TriggerDecision.illumination` with the area attached, and **A must write the
+`IlluminationEvent` record**. A `TriggerDecision` with `illumination = true` and
+no manifest record is the contract broken: those frames are the weather, and
+their rate is what separates a cloudy afternoon from a dead rig.
+
+Exactly one refresh record per frame. When `illumination` is true, B has already
+re-baselined the whole model and has zeroed `forcedRefreshPixels` to say the
+per-pixel path did not also fire, so A writes `IlluminationEvent` *instead of*
+`ForcedRefresh`, never both.
+
 ## Lifecycle
 
 | Event | A does | B does |
@@ -74,6 +86,7 @@ dropped.
 | Camera error / restart | tear down, rebuild session, log `ErrorRecord` | `MotionTrigger.reset()` — the scene may have moved |
 | Thermal backoff | reduce repeating-request cadence | nothing; it just sees fewer frames, and every duration it holds is measured against `timestampNs` rather than counted in frames (DESIGN.md 3.7) |
 | Capture stopped by a guard | keep the analysis stream running | `EventStateMachine.onDecision(captureAllowed = false)` closes the open event with its reason |
+| Illumination change (blob over `illuminationAreaFraction`) | nothing — the camera is fine, the light moved | B re-baselines its own background and returns `illumination = true` with `motion = false`; A writes the `IlluminationEvent` record and requests no still |
 | Session stop | stop repeating request, close session | `EventStateMachine.close(reason)` |
 
 The analysis stream keeps running when a guard stops *capture*: the preview and

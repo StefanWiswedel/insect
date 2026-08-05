@@ -141,6 +141,7 @@ settings.
 | Noise-statistics time constant | **20s** | Same, for the per-region residual mean and sigma. |
 | Post-roll | **5s** | Continued motion extends the same event rather than starting a new one. |
 | `minContrastFraction` | **0.03** | The threshold floor, as a fraction of local brightness. This is what cancels vignetting. |
+| `illuminationAreaFraction` | **0.02** | Upper blob-area bound, as a fraction of frame area. Above it is the light changing, not a subject: capture suppressed, background re-baselined, `illumination_event` recorded. |
 | Disk guard | **degrade below 5GB, stop below 1GB** | Degrade = 1fps ceiling and a 1.5x threshold. Stop keeps the service alive so the manifest closes. |
 | Battery | **graceful stop at 5%** | Stop capture, flush, close the manifest with a reason, stop the service. |
 | Thermal | **reduce analysis rate above 40C, stop above 45C** | Battery temperature. Reduce halves the analysis rate (floored at 2fps); stop keeps the service alive. 2C of hysteresis on the way down. |
@@ -203,8 +204,9 @@ It carries session ID, start/end/duration, device, focus in dioptres and cm,
 capture and analysis resolution and quality, event and frame counts, bytes and
 mean frame size, battery start/end/minimum, temperature min/mean/max, every
 degradation and camera error with timestamps, every focus change, the
-termination reason, and a per-event table of start time, duration, frame count
-and peak blob area.
+termination reason, the illumination-event count with first, last and largest
+(§3.2), and a per-event table of start time, duration, frame count and peak blob
+area.
 
 The aggregation lives in `:core` (`SessionSummary`) and is unit-tested, because
 it is the artefact most likely to be read by someone who was not there.
@@ -271,6 +273,48 @@ sensor noise.
 
 The threshold is locally normalised (see 0.2 above for why, and for the part of
 the design that changed once the numbers were worked through).
+
+**Illumination events: the upper area bound.** There is a minimum blob area to
+reject sensor noise and a *maximum* to reject the light changing. Measured from
+the rig: an insect at 25cm is roughly 4,900 full-resolution pixels; walking past
+the rig produced blobs of ~2.9M, about a quarter of the frame. The default bound
+is `illuminationAreaFraction = 0.02` — ~240,000 px of a 12MP frame, about 40×
+the target and two orders of magnitude below the walk-past.
+
+It is a **fraction of frame area, not a pixel count**, so it survives a
+resolution or downsample change. A pixel count here would be the same failure
+shape as the frames-vs-time class in §3.7, one axis over.
+
+An oversized blob is **not discarded**. It raises an illumination event:
+
+1. **Capture is suppressed for the frame** — and the small blobs on it too,
+   because when the whole residual field has just moved, none of them are
+   trustworthy.
+2. **An `illumination_event` record is written**, carrying the area both as
+   working pixels and as a fraction. Outdoors these are the weather: cloud
+   shadow crossing the board raises them repeatedly, and their rate is how the
+   laptop side distinguishes a cloudy afternoon's thin detection record from a
+   broken rig's. Discarding them would throw that away.
+3. **The background model is re-baselined wholesale**, because a global
+   brightness shift makes it stale everywhere at once.
+
+**Interaction with the forced refresh (§3.3).** These are two answers to "the
+model is stale", at different scales, and they must not both fire for one cause.
+The per-pixel forced refresh releases pixels individually after
+`forcedRefreshSeconds` — right for a moved bait dish, wrong for a shadow, which
+it would spend two minutes letting go of while reporting the whole board as
+motion. So on an illumination frame the re-baseline supersedes it: the trigger
+zeroes `forcedRefreshPixels`, and `rebaseline()` clears every pixel's foreground
+timer so none can reach its own deadline immediately afterwards. One stale-model
+event, one refresh, one record.
+
+**Known cost.** Re-baselining adopts whatever is in frame, so an insect present
+when a cloud shadow crosses is absorbed into the background and its event
+truncated. It re-triggers when it next moves, and the `illumination_event`
+record sits in the manifest at the truncation point, so the gap is explicable
+rather than mysterious. Accepted as the lesser harm: the alternative is a model
+that stays wrong about the whole board for two minutes every time the sun goes
+in.
 
 **Capture on demand, not pre-roll.** On trigger, full-resolution JPEGs are
 requested from the already-configured capture stream. The full-resolution stream
@@ -349,6 +393,11 @@ moved, shadow shifted. So a pixel held foreground for `forcedRefreshSeconds`
 (default 120) is folded into the background regardless, and **the forced refresh
 is logged** (`forced_refresh` records) so a re-baselining event is visible in the
 data rather than looking like an insect that vanished.
+
+That is the *local* release valve, for a change confined to part of the frame. A
+change covering more of the frame than an insect ever could is handled by the
+illumination path in §3.2 instead, which re-baselines the whole model at once.
+The two never both fire for the same cause — see the interaction note there.
 
 ### 3.4 Locked capture parameters
 
@@ -545,6 +594,10 @@ matters more here than in most projects.
 - That warm-up, background convergence, forced refresh, the moving/stationary
   decision, the stationary dwell and post-roll all behave identically in
   wall-clock terms at 2, 3, 5 and 10fps (§3.7).
+- That an oversized blob raises an illumination event rather than a detection,
+  that an insect-sized one does not, that the verdict is the same at downsample
+  1/2/4/8, and that one illumination event never produces two refresh records
+  (§3.2).
 - That local normalisation equalises corner and centre sensitivity, and that a
   global threshold does not (§0.2).
 - Event assembly: post-roll, event extension, the frame cap, the motion-adaptive

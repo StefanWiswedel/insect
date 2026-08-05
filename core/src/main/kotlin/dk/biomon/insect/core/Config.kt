@@ -66,8 +66,26 @@ data class TriggerConfig(
     val regionGridRows: Int = 6,
     /** Minimum blob area, in downsampled pixels, to count as motion. */
     val minBlobAreaPx: Int = 4,
-    /** Blobs bigger than this fraction of the frame are light changes, not insects. */
-    val maxBlobAreaFraction: Float = 0.25f,
+    /**
+     * Upper bound on blob area, as a **fraction of frame area**. Anything larger
+     * is an illumination change, not a subject (DESIGN.md 3.2).
+     *
+     * A fraction rather than a pixel count so it survives a resolution change:
+     * the same 0.02 means the same thing whether the analysis stream is 640x480
+     * or something else, and whether it is downsampled by 4 or not.
+     *
+     * The default is set from measurement. An insect at 25cm is roughly 4,900
+     * full-resolution pixels; a person walking past the rig produced blobs of
+     * ~2.9M pixels, about a quarter of the frame. 0.02 of a 12MP frame is
+     * ~240,000 px -- about 40x the target and two orders of magnitude below the
+     * walk-past -- so it separates the two cleanly with room on both sides.
+     *
+     * Blobs above this are **not discarded**. They raise an illumination event:
+     * capture is suppressed for the frame, the background is re-baselined, and
+     * an `illumination_event` record is written. Cloud shadow crossing the board
+     * will do this repeatedly outdoors and the count is the point.
+     */
+    val illuminationAreaFraction: Float = 0.02f,
     /**
      * A pixel held foreground for this long is folded back into the background
      * regardless (DESIGN.md 3.3). Stops a moved bait dish or a shifted shadow
@@ -96,6 +114,9 @@ data class TriggerConfig(
         require(minThreshold > 0f && maxThreshold >= minThreshold)
         require(minContrastFraction >= 0f && minContrastFraction < 1f)
         require(warmupSeconds >= 0)
+        require(illuminationAreaFraction > 0f && illuminationAreaFraction <= 1f) {
+            "illuminationAreaFraction must be a fraction of frame area"
+        }
     }
 }
 

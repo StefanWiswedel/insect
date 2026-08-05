@@ -178,6 +178,139 @@ class BackgroundModelTest {
         assertTrue(d.blobs.isEmpty()) { "whole-frame change produced blobs: ${d.blobs.size}" }
     }
 
+    /**
+     * The measurement that set the default: walking past the rig produced blobs
+     * of ~2.9M full-resolution pixels, about a quarter of the frame, while an
+     * insect at 25cm is ~4,900. Anything in between is the light changing.
+     *
+     * The threshold is a *fraction* of frame area rather than a pixel count so
+     * it means the same thing at any resolution or downsample factor -- which is
+     * the same failure shape as the frames-vs-time bug class, one axis over.
+     */
+    @Test
+    fun `an oversized blob is an illumination event, not a detection`() {
+        val scene = SyntheticScene(seed = 33)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
+        warmUp(trigger, scene)
+        // A quarter of the frame darkening at once: the walk-past case.
+        val quarter = Rect(0, 0, scene.width / 2, scene.height)
+        val d = trigger.onFrame(scene.frame(quarter, contrast = 0.4f))
+
+        assertTrue(d.illumination) { "a quarter-frame blob was not called illumination" }
+        assertFalse(d.motion) { "an illumination event must suppress capture" }
+        assertTrue(d.blobs.isEmpty()) { "illumination frame still offered blobs" }
+        assertTrue(d.illuminationAreaPx > 0) { "no area recorded for the event" }
+        assertTrue(d.illuminationAreaFraction > 0.02f) {
+            "area fraction ${d.illuminationAreaFraction} below the threshold that fired"
+        }
+    }
+
+    /**
+     * An insect must not be mistaken for weather. 4,900 full-resolution pixels
+     * of a 12MP frame is ~0.0004 -- fifty times under the 0.02 threshold -- so
+     * there is a wide margin, and this pins the near side of it.
+     */
+    @Test
+    fun `an insect-sized blob is a detection, not an illumination event`() {
+        val scene = SyntheticScene(seed = 35)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
+        warmUp(trigger, scene)
+        val insect = Rect.centredOn(320, 240, 16)
+        val d = trigger.onFrame(scene.frame(insect))
+        assertFalse(d.illumination) { "an insect-sized blob raised an illumination event" }
+        assertTrue(d.motion) { "insect missed" }
+    }
+
+    /**
+     * The threshold is a fraction of frame area, so the *same scene* must give
+     * the same verdict whatever the working resolution is. Downsample changes
+     * the working pixel count by 16x between these two.
+     */
+    @Test
+    fun `the illumination threshold is resolution-independent`() {
+        for (downsample in listOf(1, 2, 4, 8)) {
+            val config = TriggerConfig(downsample = downsample, warmupSeconds = 2)
+            val big = SyntheticScene(seed = 37)
+            val bigTrigger = MotionTrigger(config)
+            warmUp(bigTrigger, big)
+            val quarter = Rect(0, 0, big.width / 2, big.height)
+            assertTrue(bigTrigger.onFrame(big.frame(quarter, contrast = 0.4f)).illumination) {
+                "quarter-frame change missed at downsample $downsample"
+            }
+
+            val small = SyntheticScene(seed = 37)
+            val smallTrigger = MotionTrigger(config)
+            warmUp(smallTrigger, small)
+            val insect = Rect.centredOn(320, 240, 16)
+            assertFalse(smallTrigger.onFrame(small.frame(insect)).illumination) {
+                "insect-sized change called illumination at downsample $downsample"
+            }
+        }
+    }
+
+    /**
+     * A global brightness shift makes the background stale everywhere, so the
+     * model re-baselines wholesale rather than waiting for the per-pixel forced
+     * refresh to release pixels one at a time over two minutes.
+     */
+    @Test
+    fun `an illumination event re-baselines the model so the scene settles at once`() {
+        val scene = SyntheticScene(seed = 39)
+        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
+        warmUp(trigger, scene)
+        val shadow = Rect(0, 0, scene.width, scene.height)
+
+        val event = trigger.onFrame(scene.frame(shadow, contrast = 0.3f))
+        assertTrue(event.illumination)
+        assertTrue(event.rebaselinedPixels > 0) { "no re-baseline on an illumination event" }
+
+        // The shadow persists, but the model has already adopted it: the very
+        // next frame is quiet. Without the re-baseline this would keep reporting
+        // the whole board as motion until forcedRefreshSeconds elapsed.
+        val next = trigger.onFrame(scene.frame(shadow, contrast = 0.3f))
+        assertFalse(next.illumination) { "still illuminating one frame after the re-baseline" }
+        assertFalse(next.motion) { "scene did not settle after the re-baseline" }
+    }
+
+    /**
+     * The interaction the two refresh paths could get wrong: one stale-model
+     * event must produce one refresh, not two. `forcedRefreshPixels` is zeroed
+     * on an illumination frame because `rebaselinedPixels` supersedes it, and
+     * the re-baseline zeroes every pixel's foreground timer so none can reach
+     * its own deadline immediately afterwards either.
+     */
+    @Test
+    fun `an illumination event does not also report a forced refresh`() {
+        // A short forced-refresh window, so the per-pixel path is primed to fire
+        // at exactly the moment the illumination event lands.
+        val config = TriggerConfig(forcedRefreshSeconds = 2, warmupSeconds = 2)
+        val scene = SyntheticScene(seed = 41)
+        val trigger = MotionTrigger(config)
+        warmUp(trigger, scene)
+
+        val shadow = Rect(0, 0, scene.width, scene.height)
+        var illuminationFrames = 0
+        var doubleReported = 0
+        var forcedAfterEvent = 0
+        for (i in 0 until scene.framesFor(6f)) {
+            val d = trigger.onFrame(scene.frame(shadow, contrast = 0.3f))
+            if (d.illumination) {
+                illuminationFrames++
+                if (d.forcedRefreshPixels > 0) doubleReported++
+            } else if (illuminationFrames > 0 && d.forcedRefreshPixels > 0) {
+                forcedAfterEvent++
+            }
+        }
+        assertTrue(illuminationFrames > 0) { "the shadow never raised an illumination event" }
+        assertEquals(0, doubleReported) {
+            "$doubleReported frames reported both a forced refresh and an illumination event"
+        }
+        assertEquals(0, forcedAfterEvent) {
+            "the re-baseline did not reset the per-pixel timers: $forcedAfterEvent " +
+                "forced refreshes followed it"
+        }
+    }
+
     @Test
     fun `threshold multiplier makes the trigger more selective under disk pressure`() {
         val scene = SyntheticScene(seed = 13)

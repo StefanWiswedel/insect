@@ -41,6 +41,7 @@ data class Blob(
  */
 class BlobDetector(
     private val minAreaPx: Int,
+    /** Area ceiling as a fraction of the frame. Above it is illumination, not a subject. */
     private val maxAreaFraction: Float,
 ) {
     private var visited = BooleanArray(0)
@@ -48,9 +49,11 @@ class BlobDetector(
 
     /**
      * @param mask row-major motion mask, [width] * [height] entries.
-     * @return blobs at or above [minAreaPx], largest first. Blobs larger than
-     *   [maxAreaFraction] of the frame are dropped as light changes rather than
-     *   insects, and counted in [lastRejectedTooLarge].
+     * @return blobs at or above [minAreaPx], largest first. Components larger
+     *   than [maxAreaFraction] of the frame are excluded from the returned list
+     *   -- they are illumination changes, not subjects -- and reported through
+     *   [lastRejectedTooLarge] and [lastOversizedAreaPx] so the caller can raise
+     *   an illumination event rather than silently losing them.
      */
     fun detect(mask: BooleanArray, width: Int, height: Int): List<Blob> {
         val n = width * height
@@ -63,6 +66,7 @@ class BlobDetector(
         val maxArea = (n * maxAreaFraction).toInt().coerceAtLeast(minAreaPx + 1)
         val blobs = ArrayList<Blob>()
         var rejectedLarge = 0
+        var largestOversized = 0
 
         for (seed in 0 until n) {
             if (!mask[seed] || visited[seed]) continue
@@ -105,6 +109,7 @@ class BlobDetector(
 
             if (area > maxArea) {
                 rejectedLarge++
+                if (area > largestOversized) largestOversized = area
                 continue
             }
             if (area < minAreaPx) continue
@@ -121,11 +126,20 @@ class BlobDetector(
             )
         }
         lastRejectedTooLarge = rejectedLarge
+        lastOversizedAreaPx = largestOversized
         blobs.sortByDescending { it.areaPx }
         return blobs
     }
 
-    /** Components dropped by the last [detect] call for exceeding the area ceiling. */
+    /** Components excluded by the last [detect] call for exceeding the area ceiling. */
     var lastRejectedTooLarge: Int = 0
+        private set
+
+    /**
+     * Area of the largest such component, or 0 if there was none. Carried into
+     * the `illumination_event` record: "how much of the frame moved at once" is
+     * what distinguishes a cloud shadow from someone walking past.
+     */
+    var lastOversizedAreaPx: Int = 0
         private set
 }

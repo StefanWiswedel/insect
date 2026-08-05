@@ -205,6 +205,38 @@ class EmaBackgroundModel(
         return 1f - exp(-dtSeconds / timeConstantSeconds)
     }
 
+    /**
+     * Re-baseline the whole model onto the frame just processed, and return the
+     * number of pixels adopted.
+     *
+     * Called when the trigger has concluded that the *illumination* changed
+     * rather than that something moved (DESIGN.md 3.2). A global brightness
+     * shift makes the background stale everywhere at once, so the per-pixel
+     * forced refresh -- which releases pixels one at a time after
+     * [TriggerConfig.forcedRefreshSeconds] -- is the wrong instrument: it would
+     * take two minutes to let go of a shadow that arrived in one frame, and
+     * would spend those two minutes reporting the whole board as motion.
+     *
+     * **Interaction with the forced refresh.** This zeroes every pixel's
+     * foreground timer, so no pixel can also hit its own forced-refresh deadline
+     * on this frame or for `forcedRefreshSeconds` after it. Together with
+     * [MotionTrigger] suppressing `forcedRefreshPixels` on an illumination
+     * frame, that is what keeps one stale-model event from producing two refresh
+     * records.
+     *
+     * Region noise statistics are deliberately *not* cleared. They are gathered
+     * from background pixels only, and on an illumination frame almost nothing
+     * is background -- so they were not updated from the disturbed frame in the
+     * first place, and the pre-event values are the honest ones to keep.
+     */
+    fun rebaseline(): Int {
+        if (workWidth == 0) return 0
+        System.arraycopy(current, 0, background, 0, current.size)
+        java.util.Arrays.fill(stuckMillis, 0)
+        java.util.Arrays.fill(mask, false)
+        return current.size
+    }
+
     /** Drop all state. Used after a camera restart, where the scene may have moved. */
     fun reset() {
         framesSeen = 0

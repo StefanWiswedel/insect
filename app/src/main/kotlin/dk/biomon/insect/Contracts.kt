@@ -143,6 +143,12 @@ data class CaptureUiState(
     val storagePath: String? = null,
     /** True when the session is writing to app-specific fallback storage. */
     val storageFallback: Boolean = false,
+    /**
+     * Illumination events so far. On screen because it is the fastest way to
+     * check the threshold against the actual rig: walk in front of it and watch
+     * this tick rather than pulling the manifest afterwards.
+     */
+    val illuminationEvents: Long = 0,
     val mask: MaskSnapshot? = null,
     val preview: PreviewFrame? = null,
     /** Most recent recorded error, so a degraded session is visible at a glance. */

@@ -330,6 +330,7 @@ private fun Readings(state: CaptureUiState) {
     Reading("Battery", guard?.let { "${it.batteryPercent}%" } ?: "-")
     Reading("Temperature", guard?.let { "%.1f C".format(it.temperatureCelsius) } ?: "-")
     Reading("Analysis", "${state.analysisFps} fps")
+    Reading("Illumination events", state.illuminationEvents.toString())
 }
 
 @Composable

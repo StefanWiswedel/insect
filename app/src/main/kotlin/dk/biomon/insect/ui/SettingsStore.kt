@@ -57,6 +57,10 @@ internal object SettingsRanges {
     val noiseSigmas = 1.5f..10f
     val minBlobAreaPx = 1f..64f
     val forcedRefreshSeconds = 15f..900f
+    // A fraction of frame area, so it survives a resolution change. The low
+    // end is still ~10x a 25cm insect; the high end is a quarter of the frame,
+    // which is what a person walking past the rig produced.
+    val illuminationAreaFraction = 0.002f..0.25f
     val focusDiopters = 0f..12f
 }
 
@@ -72,6 +76,7 @@ private object Keys {
     val noiseSigmas = floatPreferencesKey("noise_sigmas")
     val minBlobAreaPx = intPreferencesKey("min_blob_area_px")
     val forcedRefreshSeconds = intPreferencesKey("forced_refresh_seconds")
+    val illuminationAreaFraction = floatPreferencesKey("illumination_area_fraction")
     val focusDiopters = floatPreferencesKey("focus_diopters")
 }
 
@@ -94,6 +99,7 @@ private fun settingsOf(
     noiseSigmas: Float,
     minBlobAreaPx: Int,
     forcedRefreshSeconds: Int,
+    illuminationAreaFraction: Float,
     focusDiopters: Float,
 ): AppSettings = AppSettings(
     trigger = DEFAULTS.trigger.copy(
@@ -109,6 +115,9 @@ private fun settingsOf(
             SettingsRanges.forcedRefreshSeconds.start.toInt(),
             SettingsRanges.forcedRefreshSeconds.endInclusive.toInt(),
         ),
+        illuminationAreaFraction = illuminationAreaFraction
+            .finiteOr(DEFAULTS.trigger.illuminationAreaFraction)
+            .coerceIn(SettingsRanges.illuminationAreaFraction),
     ),
     capture = DEFAULTS.capture.copy(
         analysisFps = analysisFps.coerceIn(
@@ -147,6 +156,7 @@ private fun AppSettings.clamped(): AppSettings = settingsOf(
     noiseSigmas = trigger.noiseSigmas,
     minBlobAreaPx = trigger.minBlobAreaPx,
     forcedRefreshSeconds = trigger.forcedRefreshSeconds,
+    illuminationAreaFraction = trigger.illuminationAreaFraction,
     focusDiopters = focusDistanceDiopters,
 )
 
@@ -160,6 +170,8 @@ private fun Preferences.toSettings(): AppSettings = settingsOf(
     noiseSigmas = this[Keys.noiseSigmas] ?: DEFAULTS.trigger.noiseSigmas,
     minBlobAreaPx = this[Keys.minBlobAreaPx] ?: DEFAULTS.trigger.minBlobAreaPx,
     forcedRefreshSeconds = this[Keys.forcedRefreshSeconds] ?: DEFAULTS.trigger.forcedRefreshSeconds,
+    illuminationAreaFraction =
+        this[Keys.illuminationAreaFraction] ?: DEFAULTS.trigger.illuminationAreaFraction,
     focusDiopters = this[Keys.focusDiopters] ?: DEFAULTS.focusDistanceDiopters,
 )
 
@@ -173,6 +185,7 @@ private fun AppSettings.writeInto(prefs: androidx.datastore.preferences.core.Mut
     prefs[Keys.noiseSigmas] = trigger.noiseSigmas
     prefs[Keys.minBlobAreaPx] = trigger.minBlobAreaPx
     prefs[Keys.forcedRefreshSeconds] = trigger.forcedRefreshSeconds
+    prefs[Keys.illuminationAreaFraction] = trigger.illuminationAreaFraction
     prefs[Keys.focusDiopters] = focusDistanceDiopters
 }
 

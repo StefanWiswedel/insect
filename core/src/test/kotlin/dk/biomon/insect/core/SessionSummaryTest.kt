@@ -7,6 +7,7 @@ import dk.biomon.insect.core.manifest.EventEnded
 import dk.biomon.insect.core.manifest.EventStarted
 import dk.biomon.insect.core.manifest.FocusChanged
 import dk.biomon.insect.core.manifest.FrameWritten
+import dk.biomon.insect.core.manifest.IlluminationEvent
 import dk.biomon.insect.core.manifest.PowerSample
 import dk.biomon.insect.core.manifest.SessionEnd
 import dk.biomon.insect.core.manifest.SessionStart
@@ -219,6 +220,34 @@ class SessionSummaryTest {
         val md = s.render()
         assertTrue(md.contains("Battery temperature did not move across 16 samples")) { md }
         assertTrue(md.contains("Trust the thermal status")) { md }
+    }
+
+    /**
+     * Cloud shadow crossing the board will raise these repeatedly outdoors, and
+     * counting them is the point: a high rate explains a thin detection record
+     * without a broken rig.
+     */
+    @Test
+    fun `illumination events are counted and summarised rather than discarded`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(IlluminationEvent(t0 + 10_000, 5_000, 19_200, 19_200, 50))
+        s.observe(IlluminationEvent(t0 + 90_000, 9_600, 19_200, 19_200, 450))
+        val md = s.render()
+
+        assertTrue(md.contains("## Illumination events")) { md }
+        assertTrue(md.contains("**Illumination events**: 2")) { md }
+        assertTrue(md.contains("**Count**: 2")) { md }
+        // The largest is the peak, not the last.
+        assertTrue(md.contains("50.0% of frame")) { md }
+        assertTrue(md.contains("cloud shadow crossing the")) { md }
+    }
+
+    @Test
+    fun `a session with no illumination events says so plainly`() {
+        val s = SessionSummary()
+        s.observe(started())
+        assertTrue(s.render().contains("Nothing changed the whole scene's brightness at once"))
     }
 
     @Test

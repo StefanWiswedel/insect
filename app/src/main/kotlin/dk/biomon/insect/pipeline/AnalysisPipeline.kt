@@ -16,6 +16,7 @@ import dk.biomon.insect.core.event.EventEndReason
 import dk.biomon.insect.core.event.EventStateMachine
 import dk.biomon.insect.core.manifest.Degradation
 import dk.biomon.insect.core.manifest.ForcedRefresh
+import dk.biomon.insect.core.manifest.IlluminationEvent
 import dk.biomon.insect.core.manifest.RateChanged
 import dk.biomon.insect.core.manifest.WarmupEnded
 import dk.biomon.insect.core.manifest.WarmupStarted
@@ -46,6 +47,9 @@ class AnalysisPipeline(
     private var eventStartMillis = 0L
 
     /** Set by the service as the guards move. */
+    /** Analysis-thread only; read on publish, which is also on the analysis thread. */
+    private var illuminationEvents = 0L
+
     @Volatile var maxCaptureFps: Float = settings.capture.movingFps
     @Volatile var thresholdMultiplier: Float = 1f
     @Volatile var captureAllowed: Boolean = true
@@ -118,7 +122,21 @@ class AnalysisPipeline(
         val decision = trigger.onFrame(frame, thresholdMultiplier)
         noteWarmup(decision, nowMillis)
 
-        if (decision.forcedRefreshPixels > 0) {
+        // Exactly one refresh record per frame. On an illumination frame the
+        // whole-model re-baseline supersedes the per-pixel forced refresh, and
+        // the trigger zeroes forcedRefreshPixels to say so.
+        if (decision.illumination) {
+            illuminationEvents++
+            recorder.record(
+                IlluminationEvent(
+                    atMillis = nowMillis,
+                    areaPx = decision.illuminationAreaPx,
+                    workPixels = decision.workWidth * decision.workHeight,
+                    rebaselinedPixels = decision.rebaselinedPixels,
+                    frameIndex = decision.frameIndex,
+                )
+            )
+        } else if (decision.forcedRefreshPixels > 0) {
             recorder.record(
                 ForcedRefresh(
                     atMillis = nowMillis,
@@ -288,6 +306,7 @@ class AnalysisPipeline(
                 mask = snapshot,
                 preview = preview ?: state.preview.takeIf { CaptureBus.previewWanted },
                 warmingUp = decision.warmingUp,
+                illuminationEvents = illuminationEvents,
                 captureMode = if (events.isActive) events.currentMode.name.lowercase() else null,
                 activeEventId = if (events.isActive) events.currentEventId else null,
             )

@@ -6,6 +6,7 @@ import dk.biomon.insect.core.manifest.EventEnded
 import dk.biomon.insect.core.manifest.EventStarted
 import dk.biomon.insect.core.manifest.FocusChanged
 import dk.biomon.insect.core.manifest.FrameWritten
+import dk.biomon.insect.core.manifest.IlluminationEvent
 import dk.biomon.insect.core.manifest.ManifestRecord
 import dk.biomon.insect.core.manifest.PowerSample
 import dk.biomon.insect.core.manifest.SessionEnd
@@ -59,6 +60,10 @@ class SessionSummary {
     private var tempSum = 0.0
     private var tempCount = 0
     private var powerSamples = 0
+    private var illuminationEvents = 0
+    private var illuminationFirstMillis = 0L
+    private var illuminationLastMillis = 0L
+    private var illuminationPeakFraction = 0f
     private var freeBytes = -1L
     private var thermalStatus: String? = null
     private var warmupStartMillis = 0L
@@ -141,6 +146,17 @@ class SessionSummary {
                 val row = eventRows.getOrPut(record.eventId) { EventRow(record.atMillis) }
                 val peak = record.blobs.maxOfOrNull { it.areaPx } ?: 0
                 if (peak > row.peakBlobArea) row.peakBlobArea = peak
+            }
+
+            is IlluminationEvent -> {
+                illuminationEvents++
+                illuminationFirstMillis =
+                    if (illuminationFirstMillis == 0L) record.atMillis else illuminationFirstMillis
+                illuminationLastMillis = record.atMillis
+                val fraction =
+                    if (record.workPixels == 0) 0f
+                    else record.areaPx.toFloat() / record.workPixels
+                if (fraction > illuminationPeakFraction) illuminationPeakFraction = fraction
             }
 
             is Degradation -> degradations += record.atMillis to "${record.kind}: ${record.detail}"
@@ -226,6 +242,7 @@ class SessionSummary {
             if (frames > 0) humanBytes(bytes / frames) else "-",
         )
         row(sb, "Power samples", powerSamples.toString())
+        row(sb, "Illumination events", illuminationEvents.toString())
         appendCapacity(sb)
 
         sb.append("\n## Battery and temperature\n\n")
@@ -245,6 +262,28 @@ class SessionSummary {
                 .append(" samples.** The platform only refreshes it when it ")
                 .append("broadcasts a battery change, so on steady charge it can ")
                 .append("latch. Trust the thermal status above instead.\n")
+        }
+
+        sb.append("\n## Illumination events\n\n")
+        if (illuminationEvents == 0) {
+            sb.append("None. Nothing changed the whole scene's brightness at once.\n")
+        } else {
+            row(sb, "Count", illuminationEvents.toString())
+            row(sb, "First", isoOrDash(illuminationFirstMillis))
+            row(sb, "Last", isoOrDash(illuminationLastMillis))
+            row(
+                sb, "Largest",
+                "%.1f%% of frame".format(java.util.Locale.US, illuminationPeakFraction * 100),
+            )
+            sb.append(
+                "\nA blob covering more of the frame than an insect ever could is " +
+                    "the light moving, not a subject. Capture is suppressed for " +
+                    "those frames and the background model is re-baselined, " +
+                    "because a global brightness shift makes it stale everywhere " +
+                    "at once. Outdoors these are mostly cloud shadow crossing the " +
+                    "board: a high count means a broken sky, and explains a thin " +
+                    "detection record without a broken rig.\n"
+            )
         }
 
         sb.append("\n## Degradations\n\n")

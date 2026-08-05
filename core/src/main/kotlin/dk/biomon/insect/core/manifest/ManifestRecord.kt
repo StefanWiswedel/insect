@@ -314,6 +314,41 @@ data class ForcedRefresh(
     )
 }
 
+/**
+ * The scene's lighting changed rather than something moving in it: a component
+ * larger than `illuminationAreaFraction` of the frame.
+ *
+ * Written *instead of* a detection, not as well as one -- capture is suppressed
+ * for the frame. It is also written instead of the [ForcedRefresh] that the
+ * whole-model re-baseline supersedes, so one stale-model event produces one
+ * record, never two.
+ *
+ * These are counted rather than discarded because outdoors they are the weather:
+ * cloud shadow crossing the board will raise them repeatedly, and their rate is
+ * how the laptop side tells a cloudy afternoon's thin detection record from a
+ * broken rig's.
+ */
+data class IlluminationEvent(
+    override val atMillis: Long,
+    /** Largest oversized component, in downsampled working pixels. */
+    val areaPx: Int,
+    /** Working pixels in the whole frame, so [areaPx] can be read as a fraction. */
+    val workPixels: Int,
+    /** Pixels the background model re-baselined in response. */
+    val rebaselinedPixels: Int,
+    val frameIndex: Long,
+) : ManifestRecord {
+    override val type: String get() = "illumination_event"
+    override fun toJsonLine(): String = line(
+        type, atMillis,
+        "area_px" to areaPx,
+        "of" to workPixels,
+        "area_fraction" to (if (workPixels == 0) 0f else areaPx.toFloat() / workPixels),
+        "rebaselined_px" to rebaselinedPixels,
+        "frame" to frameIndex,
+    )
+}
+
 /** A recoverable failure. The session continues; the record says it happened. */
 data class ErrorRecord(
     override val atMillis: Long,

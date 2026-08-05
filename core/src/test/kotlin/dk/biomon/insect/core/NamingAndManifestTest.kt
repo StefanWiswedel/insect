@@ -105,6 +105,27 @@ class NamingAndManifestTest {
         assertFalse(json.contains("to_cm")) { json }
     }
 
+    /**
+     * The laptop side needs the area as a fraction to compare across sessions,
+     * and the raw pixel counts to check the fraction was computed from what it
+     * thinks it was. Carry both rather than making it re-derive one.
+     */
+    @Test
+    fun `an illumination event carries its area both ways`() {
+        val json = dk.biomon.insect.core.manifest.IlluminationEvent(
+            atMillis = 1L,
+            areaPx = 4_800,
+            workPixels = 19_200,
+            rebaselinedPixels = 19_200,
+            frameIndex = 91,
+        ).toJsonLine()
+        assertTrue(json.contains("\"illumination_event\"")) { json }
+        assertTrue(json.contains("\"area_px\":4800")) { json }
+        assertTrue(json.contains("\"of\":19200")) { json }
+        assertTrue(json.contains("\"area_fraction\":0.25")) { json }
+        assertTrue(json.contains("\"rebaselined_px\":19200")) { json }
+    }
+
     @Test
     fun `manifest lines never break the one-record-per-line contract`() {
         val json = Degradation(1L, "thermal", "backoff\nto 1fps\ttab \"quoted\"").toJsonLine()

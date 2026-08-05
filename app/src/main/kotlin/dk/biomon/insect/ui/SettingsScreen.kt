@@ -139,6 +139,21 @@ fun SettingsScreen(repository: SettingsRepository, onBack: () -> Unit) {
             Note("In downsampled analysis pixels, not sensor pixels.")
 
             SettingSlider(
+                label = "Illumination threshold",
+                value = settings.trigger.illuminationAreaFraction,
+                range = SettingsRanges.illuminationAreaFraction,
+                format = { "%.1f%% of frame".format(it * 100) },
+            ) { v ->
+                edit { it.copy(trigger = it.trigger.copy(illuminationAreaFraction = v)) }
+            }
+            Note(
+                "A blob larger than this is the light changing, not a subject. " +
+                    "Capture is suppressed for the frame, the background is " +
+                    "re-baselined, and an illumination_event is recorded. " +
+                    "A fraction of frame area, so it survives a resolution change."
+            )
+
+            SettingSlider(
                 label = "Forced background refresh",
                 value = settings.trigger.forcedRefreshSeconds.toFloat(),
                 range = SettingsRanges.forcedRefreshSeconds,
