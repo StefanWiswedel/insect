@@ -145,7 +145,7 @@ the measured 33.5 °C indoor ceiling to the 40 °C reduce threshold is ~6.5 °C,
 which a Copenhagen late-summer afternoon in a closed housing will cover. So the
 reduced-rate path (§4) is a normal operating mode to be validated on a real
 deployment, not a corner case — which is also why every duration in the trigger
-is measured in seconds rather than frames (§3.7): at 2fps those constants have
+is measured in seconds rather than frames (§3.8): at 2fps those constants have
 to still mean what they say.
 
 ---
@@ -170,7 +170,10 @@ settings.
 | Noise-statistics time constant | **20s** | Same, for the per-region residual mean and sigma. |
 | Post-roll | **5s** | Continued motion extends the same event rather than starting a new one. |
 | `minContrastFraction` | **0.03** | The threshold floor, as a fraction of local brightness. This is what cancels vignetting. |
-| `illuminationAreaFraction` | **0.02** | Upper blob-area bound, as a fraction of frame area. Above it is the light changing, not a subject: capture suppressed, background re-baselined, `illumination_event` recorded. |
+| Analysis downsample | **2x** (working frame 320x240) | Was 4x. At 4x a fly at 31cm was 2.4-4.7 working px against a floor of 4 -- the rig could not see its own target. Settable, so it can be reverted. |
+| `minBlobAreaPx` | **3** working px | Derived, not scaled: the smallest shape with extent on both axes, and ~3x under the smallest expected target. |
+| `illuminationAreaFraction` | **0.02** | Certain gate. Above it, illumination on size alone. |
+| `illuminationSuspectFraction` | **0.005** | Suspect gate. Between the two, 2 of 3 corroborating signals are required. |
 | Disk guard | **degrade below 5GB, stop below 1GB** | Degrade = 1fps ceiling and a 1.5x threshold. Stop keeps the service alive so the manifest closes. |
 | Battery | **graceful stop at 5%** | Stop capture, flush, close the manifest with a reason, stop the service. |
 | Thermal | **reduce analysis rate above 40C, stop above 45C** | Battery temperature. Reduce halves the analysis rate (floored at 2fps); stop keeps the service alive. 2C of hysteresis on the way down. |
@@ -236,6 +239,18 @@ degradation and camera error with timestamps, every focus change, the
 termination reason, the illumination-event count with first, last and largest
 (§3.2), and a per-event table of start time, duration, frame count and peak blob
 area.
+
+Two sections exist to keep the trigger honest rather than to describe the run:
+
+- **Detection geometry** — working distance, working frame, expected insect size
+  in full-resolution *and* working pixels, `minBlobAreaPx`, and the ratio between
+  them, with a verdict that says plainly when the rig cannot see its own target.
+- **Event diagnostics** — for every event, peak blob area, % of frame, edges
+  touched, opposite-edge flag, fill ratio, blob count, centroid spread, and the
+  verdict the illumination rule gives, produced by the same
+  `IlluminationClassifier` the device runs. So every session diagnoses its own
+  thresholds and the rule can be tuned from any run, with no script to fetch and
+  no files to move.
 
 The aggregation lives in `:core` (`SessionSummary`) and is unit-tested, because
 it is the artefact most likely to be read by someone who was not there.
@@ -303,16 +318,68 @@ sensor noise.
 The threshold is locally normalised (see 0.2 above for why, and for the part of
 the design that changed once the numbers were worked through).
 
-**Illumination events: the upper area bound.** There is a minimum blob area to
-reject sensor noise and a *maximum* to reject the light changing. Measured from
-the rig: an insect at 25cm is roughly 4,900 full-resolution pixels; walking past
-the rig produced blobs of ~2.9M, about a quarter of the frame. The default bound
-is `illuminationAreaFraction = 0.02` — ~240,000 px of a 12MP frame, about 40×
-the target and two orders of magnitude below the walk-past.
+**Detection geometry: the subject has to be bigger than the noise floor.**
+The first sessions detected almost nothing but artefacts, and the reason was
+arithmetic nobody had done. At 31cm a fly is 1,500-3,000 full-resolution pixels.
+With the analysis stream at 640x480 and a 4x downsample, that is **2.4-4.7
+working pixels** against a `minBlobAreaPx` floor of 4 — the target was at or
+under the floor, so essentially nothing that *could* trigger was an insect.
 
-It is a **fraction of frame area, not a pixel count**, so it survives a
+The downsample was chosen for noise reduction: averaging 16 sensor pixels drops
+sigma 4x. But it costs 16x in target area, and the target was already at the
+limit. That is the wrong trade when noise is handled by the *amplitude*
+threshold — which is measured per region and adapts — while lost target area
+cannot be recovered by anything downstream.
+
+So the working frame is **320x240 (2x)**, and `minBlobAreaPx` is **3**, derived
+rather than scaled: three four-connected pixels is the smallest shape with extent
+on both axes, and it sits ~3x under the smallest expected target instead of above
+it. `DetectionGeometry` recomputes all of this from the session's own focus
+distance and capture geometry, and `SUMMARY.md` prints it **every run** with an
+explicit verdict, because the failure here was never the constant — it was that
+no part of the system related the optics to the working resolution, so nothing
+could say the rig had gone blind.
+
+**Illumination events: a gate, then corroboration.** There is a minimum blob
+area to reject sensor noise and an upper bound to reject the light changing.
+
+A single upper threshold cannot work. On the 12.19MP sensor a wings-spread moth
+is ~60,000px (**0.49%** of frame) and the smallest observed false detection was
+88,000px (**0.72%**) — a 1.5x gap. Any one number either passes the artefacts or
+suppresses the moths, and moth sessions are planned. So size **gates** rather
+than decides:
+
+| Tier | Rule | Why |
+| --- | --- | --- |
+| Certain | area >= **2%** -> illumination, no corroboration | Nothing biological is 2% of frame at 31cm. This is the walk-past case (~2.9M px, a quarter of the frame). |
+| Suspect | area >= **0.5%** -> examine | Sits in the moth/artefact gap. A gate, not a verdict. |
+| Below | detection | Moths and everything smaller pass untouched. |
+
+A suspect blob needs **2 of 3** corroborating signals:
+
+1. **Edge contact** — the bounding box touches two *opposite* edges, or three of
+   four. Adjacent-pair contact alone is not evidence: bait sits in the corners of
+   the board, so an insect at a corner station legitimately produces it.
+2. **Fill ratio** — blob area over bounding-box area, below **0.35**. A body
+   fills its box; a brightness gradient sprawls.
+3. **Blob count** — three or more blobs in one frame with centroid spread over
+   **50%** of the frame diagonal. Three insects arriving in the same 200ms across
+   separated regions is implausible.
+
+The gate can afford to be loose because corroboration does the work: a moth is
+interior, compact and alone, so it scores 0 of 3 and survives even when its size
+crosses the gate. That property is what makes this more robust than a tighter
+number.
+
+Both gates are **fractions of frame area, not pixel counts**, so they survive a
 resolution or downsample change. A pixel count here would be the same failure
-shape as the frames-vs-time class in §3.7, one axis over.
+shape as the frames-vs-time class in §3.8, one axis over.
+
+`IlluminationClassifier` is the single implementation, used live by
+`MotionTrigger` on working-space blobs and retrospectively by `SessionSummary` on
+the full-resolution boxes in the manifest. Every signal is a ratio, so both give
+the same verdict — which is what lets `SUMMARY.md` report per-event diagnostics
+that cannot drift from the rule the device actually ran.
 
 An oversized blob is **not discarded**. It raises an illumination event:
 
@@ -472,7 +539,29 @@ session, both streams and the background model are untouched. Every change is
 recorded (`focus` records), because refocusing shifts sharpness across the whole
 frame and the background model reads that as motion everywhere at once.
 
-### 3.6 Foreground service and screen-off
+### 3.6 Framing mode
+
+Aiming the rig used to require starting a real session, which put hands in shot,
+the stand being nudged and focus being hunted into the data — as frames a later
+analysis cannot distinguish from a genuine visit.
+
+So there is a **framing mode**: full-screen preview with the analysis mask
+overlaid and the focus slider to hand, running the camera and the trigger with a
+`PreviewRecorder` behind them that writes nothing. No session directory, no
+manifest, no session id, nothing counted. Capture is suppressed upstream as well
+(`AnalysisPipeline.captureAllowed = false`), so no still is ever requested and no
+event ever opens.
+
+The mask overlay matters as much as the image. Framing is not only "is the board
+in shot" but "is the trigger quiet when nothing is happening", and the overlay is
+the only way to check the second before committing nine hours to it.
+
+`Start recording` promotes it to a real session. That tears the camera down and
+brings it back up against a real recorder rather than handing the session the
+preview's already-running stream, so a session owns every frame it ever saw —
+inheriting them is precisely the contamination framing mode exists to prevent.
+
+### 3.7 Foreground service and screen-off
 
 There is no existing Kotlin audio recorder in this repository to reuse — it was
 not present. The bird station's conventions are followed from the brief rather
@@ -484,7 +573,7 @@ transition. **Non-negotiable #5: a one-hour screen-off test producing correctly
 timestamped, correctly focused, correctly exposed frames is the milestone that
 matters.** Everything else is secondary.
 
-### 3.7 Durations are durations, not frame counts
+### 3.8 Durations are durations, not frame counts
 
 **The analysis rate is not a constant.** Thermal backoff halves it to a floor of
 2fps, and on a hot Copenhagen afternoon in a closed enclosure that is the normal
@@ -567,7 +656,7 @@ without any clean shutdown having occurred.
   halves (floored at 2fps, below which the interval between centroid fixes is
   long enough that a feeding insect's own jitter dominates the speed estimate);
   the capture ceiling follows it down, because capture is requested from the
-  analysis thread (§3.7). Above 45°C capture stops but the service stays alive.
+  analysis thread (§3.8). Above 45°C capture stops but the service stays alive.
   Every transition is logged, including the capture ceiling's.
   Transitions carry 2°C of hysteresis so a temperature sitting on a boundary
   cannot flap and fill the manifest with noise. A degraded session is better
@@ -581,7 +670,15 @@ without any clean shutdown having occurred.
 
 Minimal, and not the point. One screen: preview with the trigger mask overlaid,
 current focus distance, battery percentage and temperature, free space, events so
-far this session, start/stop. A settings screen for thresholds and framerate.
+far this session, illumination events, start/stop. A settings screen for
+thresholds and framerate.
+
+Plus a **framing mode** (§3.6), reached from the main screen and taking over the
+whole of it: the scene full-screen with the mask overlaid and the focus slider
+to hand, writing nothing, with a `Start recording` control. It is a separate mode
+rather than a bigger preview on the main screen because the two answer different
+questions — the main screen answers "is this working", framing answers "is this
+aimed", and the second one wants all the pixels.
 
 The screen is locked to **portrait**: the rig is a phone on a stand pointing
 straight down at a board, which is a portrait posture. UI orientation says
@@ -622,11 +719,18 @@ matters more here than in most projects.
   and that a permanently changed scene does re-baseline afterwards.
 - That warm-up, background convergence, forced refresh, the moving/stationary
   decision, the stationary dwell and post-roll all behave identically in
-  wall-clock terms at 2, 3, 5 and 10fps (§3.7).
+  wall-clock terms at 2, 3, 5 and 10fps (§3.8).
 - That an oversized blob raises an illumination event rather than a detection,
   that an insect-sized one does not, that the verdict is the same at downsample
   1/2/4/8, and that one illumination event never produces two refresh records
   (§3.2).
+- That the tiered rule calls a walk-past illumination on size alone, catches an
+  edge-spanning sprawling band on corroboration, and leaves a wings-spread moth
+  and a corner-bait insect alone — and that it gives the same verdict on
+  working-space and full-resolution blobs, so the `SUMMARY.md` diagnostics
+  describe the rule the device ran (§3.2).
+- That `DetectionGeometry` registers the old 4x/floor-4 configuration as **blind**
+  and the shipped 2x/floor-3 configuration as clear with >=3x margin (§3.2).
 - That local normalisation equalises corner and centre sensitivity, and that a
   global threshold does not (§0.2).
 - Event assembly: post-roll, event extension, the frame cap, the motion-adaptive

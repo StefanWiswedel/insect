@@ -31,6 +31,7 @@ import dk.biomon.insect.core.policy.GuardEvaluator
 import dk.biomon.insect.core.policy.StopReason
 import dk.biomon.insect.pipeline.AnalysisPipeline
 import dk.biomon.insect.power.PowerLogger
+import dk.biomon.insect.store.PreviewRecorder
 import dk.biomon.insect.store.SessionStore
 import dk.biomon.insect.ui.MainActivity
 import dk.biomon.insect.ui.SettingsStore
@@ -64,6 +65,13 @@ class CaptureService : Service() {
     private var stopping = false
 
     /**
+     * True while framing rather than recording. Nothing is written in this
+     * state; see [PreviewRecorder]. Kept as its own flag rather than inferred
+     * from the recorder type so the intent is legible at every use.
+     */
+    private var previewing = false
+
+    /**
      * Set once the camera exists. The static hooks are called from the UI thread
      * at arbitrary times, including before the session has built anything, and
      * touching a lateinit from there would throw.
@@ -84,16 +92,28 @@ class CaptureService : Service() {
                 shutdown("user_stopped")
                 return START_NOT_STICKY
             }
+            ACTION_START_RECORDING -> {
+                // Promoting a preview to a real session. The camera has to be
+                // torn down and brought back up against a real recorder, so the
+                // session owns every frame it ever sees -- a session that
+                // inherited the preview's frames would have setup frames in it,
+                // which is the whole thing preview exists to prevent.
+                teardown("preview_ended")
+                startSession(preview = false)
+                return START_STICKY
+            }
         }
-        if (!started) startSession()
+        if (!started) startSession(preview = intent?.action == ACTION_PREVIEW)
         // START_STICKY: if the OS kills us for memory, come back and keep going.
         // The session resumes into a new session directory rather than pretending
         // to be the old one -- see the note in startSession.
         return START_STICKY
     }
 
-    private fun startSession() {
+    private fun startSession(preview: Boolean = false) {
         started = true
+        previewing = preview
+        stopping = false
         settings = SettingsStore.get(applicationContext).settings.value
 
         // The typed overload is required from API 34 for a camera foreground
@@ -102,27 +122,35 @@ class CaptureService : Service() {
         // which is why the UI asks for it before offering the button.
         startForeground(
             NOTIFICATION_ID,
-            buildNotification("starting"),
+            buildNotification(if (preview) "framing - not recording" else "starting"),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA,
         )
         acquireWakeLock()
 
-        recorder = SessionStore.open(applicationContext, settings)
+        // Preview writes nothing: no session directory, no manifest, no
+        // session id, nothing counted. See PreviewRecorder.
+        recorder = if (preview) PreviewRecorder()
+        else SessionStore.open(applicationContext, settings)
         powerLogger = PowerLogger(applicationContext, recorder)
         guards = GuardEvaluator(settings.guards, settings.capture, settings.trigger)
 
         camera = CameraController(applicationContext, settings, cameraCallbacks)
         pipeline = AnalysisPipeline(settings, recorder, camera)
+        // Nothing is captured while framing, so no still is ever requested and
+        // no event is ever opened. The analysis stream still runs, which is what
+        // feeds the preview and the mask overlay.
+        pipeline.captureAllowed = !preview
         cameraReady = true
 
         CaptureBus.publish {
             it.copy(
-                running = true,
-                sessionId = recorder.session.sessionId,
+                running = !preview,
+                previewing = preview,
+                sessionId = if (preview) null else recorder.session.sessionId,
                 analysisFps = settings.capture.analysisFps,
                 focusDistanceDiopters = settings.focusDistanceDiopters,
                 // Where it actually landed, not where it was meant to.
-                storagePath = recorder.session.directory.absolutePath,
+                storagePath = if (preview) null else recorder.session.directory.absolutePath,
                 storageFallback = !SessionStore.hasSharedStorage(),
             )
         }
@@ -283,7 +311,10 @@ class CaptureService : Service() {
                         stats = recorder.stats.value,
                     )
                 }
-                updateNotification(state.describe())
+                updateNotification(
+                    if (previewing) "framing - not recording; ${state.describe()}"
+                    else state.describe()
+                )
 
                 when (state.stopReason) {
                     // A full disk stops capture but keeps the service alive, so
@@ -312,8 +343,17 @@ class CaptureService : Service() {
         }
     }
 
-    private fun shutdown(reason: String) {
-        if (stopping) return
+    /**
+     * Release everything the session owns, without stopping the service.
+     *
+     * Separate from [shutdown] because promoting a preview into a recording has
+     * to tear the camera down and build it back up against a real recorder --
+     * while the service keeps running, since it is holding the camera foreground
+     * type either way. Calling [shutdown] there would schedule a `stopSelf` that
+     * could land after the new session had started.
+     */
+    private fun teardown(reason: String) {
+        if (!started) return
         stopping = true
         cameraReady = false
         mainHandler.removeCallbacksAndMessages(null)
@@ -333,6 +373,14 @@ class CaptureService : Service() {
         }
         releaseWakeLock()
         CaptureBus.reset()
+        started = false
+        previewing = false
+    }
+
+    private fun shutdown(reason: String) {
+        if (stopping && !started) return
+        teardown(reason)
+        stopping = true
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -421,6 +469,8 @@ class CaptureService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val WAKE_LOCK_TAG = "biomon:insect-capture"
         private const val ACTION_STOP = "dk.biomon.insect.STOP"
+        private const val ACTION_PREVIEW = "dk.biomon.insect.PREVIEW"
+        private const val ACTION_START_RECORDING = "dk.biomon.insect.START_RECORDING"
 
         /**
          * Held statically because the UI comes and goes and the service must not
@@ -432,6 +482,22 @@ class CaptureService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, CaptureService::class.java)
+            context.startForegroundService(intent)
+        }
+
+        /**
+         * Framing mode: camera and analysis run, nothing is written. Uses the
+         * same foreground service because the camera needs one either way.
+         */
+        fun startPreview(context: Context) {
+            val intent = Intent(context, CaptureService::class.java).setAction(ACTION_PREVIEW)
+            context.startForegroundService(intent)
+        }
+
+        /** Promote a preview into a real recording session. */
+        fun startRecording(context: Context) {
+            val intent =
+                Intent(context, CaptureService::class.java).setAction(ACTION_START_RECORDING)
             context.startForegroundService(intent)
         }
 

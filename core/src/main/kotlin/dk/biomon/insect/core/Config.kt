@@ -8,8 +8,28 @@ package dk.biomon.insect.core
  * is the laptop pipeline's job.
  */
 data class TriggerConfig(
-    /** Analysis frames are downsampled by this factor before differencing. */
-    val downsample: Int = 4,
+    /**
+     * Analysis frames are downsampled by this factor before differencing.
+     *
+     * **2, not 4.** The 4x downsample was chosen for noise reduction -- averaging
+     * 16 sensor pixels drops sigma 4x -- but it costs 16x in *target area*, and
+     * the target was already at the limit. At 31cm a fly is 1,500-3,000
+     * full-resolution pixels, which at 4x is 2.4-4.7 working pixels against a
+     * floor of 4: the rig could not reliably see its own subject, which is the
+     * likeliest reason every early detection was an artefact.
+     *
+     * At 2x the working frame is 320x240 and the same fly is ~9-19 working
+     * pixels, clear of any sensible floor. The noise trade is accepted: noise is
+     * handled by the *amplitude* threshold, which is measured per region and
+     * adapts, whereas lost target area cannot be recovered by anything
+     * downstream.
+     *
+     * A setting so it can be reverted. Note that [minBlobAreaPx] is in working
+     * pixels, so changing this changes what that floor means -- which is exactly
+     * why the Detection geometry section of `SUMMARY.md` reports the ratio
+     * between target size and floor on every run.
+     */
+    val downsample: Int = 2,
     /**
      * Time constant of the background EMA, in seconds.
      *
@@ -64,8 +84,32 @@ data class TriggerConfig(
      */
     val regionGridCols: Int = 8,
     val regionGridRows: Int = 6,
-    /** Minimum blob area, in downsampled pixels, to count as motion. */
-    val minBlobAreaPx: Int = 4,
+    /**
+     * Minimum blob area, in **working** (post-downsample) pixels, to count as
+     * motion.
+     *
+     * Derived rather than scaled. Three questions set it:
+     *
+     * 1. *What must it reject?* Isolated threshold excursions. The amplitude
+     *    threshold is already `regionMean + 4 sigma` with a brightness-relative
+     *    floor, so a single working pixel crossing it is rare; what this floor
+     *    adds is a demand for **spatial extent**. Three four-connected pixels is
+     *    the smallest shape with extent on both axes -- a single pixel or a
+     *    two-pixel domino can come from one hot sensor site surviving the box
+     *    average, an L cannot.
+     * 2. *What must it not reject?* The smallest target. At 31cm and 2x
+     *    downsample that is ~9.4 working pixels, so a floor of 3 leaves a 3.1x
+     *    margin, and 6.3x at the top of the range. The old floor of 4 at 4x
+     *    downsample left a margin of **0.6x** -- the target was under the floor.
+     * 3. *How much margin is enough?* Enough that a partly occluded insect, or
+     *    one straddling a cell boundary, still clears it. 3x is; 1x is not.
+     *
+     * `DetectionGeometry` recomputes this relationship from the session's own
+     * focus distance and reports it in `SUMMARY.md` every run, so a future
+     * change to [downsample], analysis resolution or working distance cannot
+     * quietly invalidate the derivation the way the last one did.
+     */
+    val minBlobAreaPx: Int = 3,
     /**
      * Upper bound on blob area, as a **fraction of frame area**. Anything larger
      * is an illumination change, not a subject (DESIGN.md 3.2).
@@ -84,8 +128,32 @@ data class TriggerConfig(
      * capture is suppressed for the frame, the background is re-baselined, and
      * an `illumination_event` record is written. Cloud shadow crossing the board
      * will do this repeatedly outdoors and the count is the point.
+     *
+     * This is the *certain* gate: at or above it the call is made on size alone.
+     * See [illuminationSuspectFraction] for the corroborated tier.
      */
     val illuminationAreaFraction: Float = 0.02f,
+    /**
+     * Lower gate, above which a blob is *examined* rather than judged.
+     *
+     * 0.5% sits in the gap between a wings-spread moth (~60,000px, 0.49% of a
+     * 12.19MP frame) and the smallest observed false detection (88,000px,
+     * 0.72%). A blob over this gate must collect
+     * [illuminationSignalsRequired] of three corroborating signals before it is
+     * called illumination -- and a moth, being interior, compact and alone,
+     * collects none, so it survives even when its size crosses the gate.
+     */
+    val illuminationSuspectFraction: Float = 0.005f,
+    /** How close to an edge a bounding box must come to count as touching it. */
+    val illuminationEdgeMarginFraction: Float = 0.01f,
+    /** Blob area over bounding-box area, below which the blob is too sparse to be a body. */
+    val illuminationFillRatioMax: Float = 0.35f,
+    /** Simultaneous blobs needed for the count signal. */
+    val illuminationBlobCountMin: Int = 3,
+    /** How far apart those blobs must be, as a fraction of the frame diagonal. */
+    val illuminationSpreadFractionMin: Float = 0.5f,
+    /** Corroborating signals required to call a suspect blob illumination. */
+    val illuminationSignalsRequired: Int = 2,
     /**
      * A pixel held foreground for this long is folded back into the background
      * regardless (DESIGN.md 3.3). Stops a moved bait dish or a shifted shadow
@@ -117,6 +185,15 @@ data class TriggerConfig(
         require(illuminationAreaFraction > 0f && illuminationAreaFraction <= 1f) {
             "illuminationAreaFraction must be a fraction of frame area"
         }
+        require(illuminationSuspectFraction > 0f) {
+            "illuminationSuspectFraction must be a fraction of frame area"
+        }
+        require(illuminationSuspectFraction <= illuminationAreaFraction) {
+            "the suspect gate must not sit above the certain gate"
+        }
+        require(illuminationSignalsRequired in 0..3)
+        require(illuminationBlobCountMin >= 1)
+        require(illuminationFillRatioMax > 0f && illuminationFillRatioMax <= 1f)
     }
 }
 

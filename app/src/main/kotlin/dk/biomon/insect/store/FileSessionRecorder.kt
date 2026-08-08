@@ -11,6 +11,7 @@ import dk.biomon.insect.core.manifest.ErrorRecord
 import dk.biomon.insect.core.manifest.EventEnded
 import dk.biomon.insect.core.manifest.EventStarted
 import dk.biomon.insect.core.manifest.FrameWritten
+import dk.biomon.insect.core.TriggerConfig
 import dk.biomon.insect.core.manifest.ManifestRecord
 import dk.biomon.insect.core.manifest.SessionEnd
 import dk.biomon.insect.core.naming.FrameNaming
@@ -43,6 +44,12 @@ class FileSessionRecorder(
     private val manifest: ManifestWriter,
     private val database: SessionDatabase,
     private val scanner: MediaScanner?,
+    /**
+     * The trigger config this session is running with. The summary needs it to
+     * state the detection geometry and to re-run the illumination rule over
+     * recorded blobs -- both have to reflect what actually ran, not defaults.
+     */
+    private val trigger: TriggerConfig = TriggerConfig(),
 ) : SessionRecorder {
 
     private val framesDir = File(session.directory, SessionLayout.FRAMES_DIR)
@@ -54,7 +61,7 @@ class FileSessionRecorder(
     private val eventStartTimes = HashMap<Long, Long>()
 
     private val summaryLock = Any()
-    private val summary = SessionSummary()
+    private val summary = SessionSummary(trigger)
     private var lastSummaryWriteMillis = 0L
 
     override fun record(record: ManifestRecord) {

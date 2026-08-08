@@ -6,6 +6,10 @@ import dk.biomon.insect.core.manifest.EventEnded
 import dk.biomon.insect.core.manifest.EventStarted
 import dk.biomon.insect.core.manifest.FocusChanged
 import dk.biomon.insect.core.manifest.FrameWritten
+import dk.biomon.insect.core.TriggerConfig
+import dk.biomon.insect.core.geometry.DetectionGeometry
+import dk.biomon.insect.core.illumination.IlluminationAssessment
+import dk.biomon.insect.core.illumination.IlluminationClassifier
 import dk.biomon.insect.core.manifest.IlluminationEvent
 import dk.biomon.insect.core.manifest.ManifestRecord
 import dk.biomon.insect.core.manifest.PowerSample
@@ -33,7 +37,15 @@ import java.time.format.DateTimeFormatter
  *
  * Not thread-safe; the recorder serialises access.
  */
-class SessionSummary {
+class SessionSummary(
+    /**
+     * The trigger configuration the session ran with. Needed to re-run the
+     * illumination rule over recorded blobs and to state the detection geometry;
+     * defaults are only right for a summary rebuilt outside a session.
+     */
+    private val trigger: TriggerConfig = TriggerConfig(),
+) {
+    private val classifier = IlluminationClassifier(trigger)
 
     private var sessionId: String = "unknown"
     private var startMillis: Long = 0
@@ -89,6 +101,12 @@ class SessionSummary {
         var framesObserved: Int = 0
         var lastFrameMillis: Long = 0
         var peakBlobArea: Int = 0
+        /**
+         * The blob list from the frame with the largest blob, kept so the
+         * illumination rule can be re-run over it at render time. Bounded by one
+         * frame per event, so this costs nothing worth counting.
+         */
+        var peakBlobs: List<dk.biomon.insect.core.blob.Blob> = emptyList()
         var ended = false
     }
 
@@ -154,7 +172,10 @@ class SessionSummary {
                 row.framesObserved++
                 row.lastFrameMillis = record.atMillis
                 val peak = record.blobs.maxOfOrNull { it.areaPx } ?: 0
-                if (peak > row.peakBlobArea) row.peakBlobArea = peak
+                if (peak > row.peakBlobArea) {
+                    row.peakBlobArea = peak
+                    row.peakBlobs = record.blobs
+                }
             }
 
             is IlluminationEvent -> {
@@ -224,6 +245,8 @@ class SessionSummary {
             sb, "Analysis",
             if (analysisWidth > 0) "${analysisWidth}x$analysisHeight" else "-",
         )
+
+        appendDetectionGeometry(sb)
 
         sb.append("\n## Warm-up\n\n")
         if (warmupStartMillis <= 0) {
@@ -373,7 +396,144 @@ class SessionSummary {
                     .append("is worth seeing.\n")
             }
         }
+        appendEventDiagnostics(sb)
         return sb.toString()
+    }
+
+    /**
+     * What the subject actually measures in the pixels the trigger works on.
+     *
+     * Present on every run because its absence is what allowed the rig to be
+     * blind to its own target without anything saying so: at 4x downsample a fly
+     * at 31cm was 2.4-4.7 working pixels against a floor of 4, so essentially
+     * nothing that could trigger was an insect.
+     */
+    private fun appendDetectionGeometry(sb: StringBuilder) {
+        sb.append("\n## Detection geometry\n\n")
+        val a = DetectionGeometry.assess(
+            focusDiopters = focusDiopters,
+            captureWidth = captureWidth,
+            captureHeight = captureHeight,
+            analysisWidth = analysisWidth,
+            analysisHeight = analysisHeight,
+            downsample = trigger.downsample,
+            minBlobAreaPx = trigger.minBlobAreaPx,
+        )
+        if (a == null) {
+            sb.append("Not computable: focus at infinity, or capture geometry not recorded.\n")
+            return
+        }
+        row(sb, "Working distance", String.format(java.util.Locale.US, "%.0f cm", a.distanceCm))
+        row(sb, "Working frame", "${a.workingWidth}x${a.workingHeight} (downsample ${trigger.downsample}x)")
+        row(
+            sb, "Expected insect, full resolution",
+            String.format(java.util.Locale.US, "%,.0f-%,.0f px", a.fullResMinPx, a.fullResMaxPx),
+        )
+        row(
+            sb, "Expected insect, working pixels",
+            String.format(java.util.Locale.US, "%.1f-%.1f px", a.workingMinPx, a.workingMaxPx),
+        )
+        row(sb, "Minimum blob area", "${a.minBlobAreaPx} px")
+        row(
+            sb, "Ratio (target / floor)",
+            String.format(java.util.Locale.US, "%.1fx-%.1fx", a.ratioMin, a.ratioMax),
+        )
+        sb.append('\n')
+        when {
+            a.blind -> sb.append(
+                "**The rig cannot see its own target.** The smallest expected " +
+                    "insect is below the minimum blob area, so it can never form " +
+                    "a blob large enough to trigger. Anything this session did " +
+                    "detect was something else. Reduce the downsample factor or " +
+                    "the minimum blob area before deploying.\n"
+            )
+            a.marginal -> sb.append(
+                "**Marginal.** The smallest expected insect is under " +
+                    String.format(java.util.Locale.US, "%.1fx", DetectionGeometry.SAFE_RATIO) +
+                    " the minimum blob area, so a partly occluded one will be " +
+                    "missed. Workable, but not comfortable.\n"
+            )
+            else -> sb.append(
+                "The smallest expected insect clears the minimum blob area with " +
+                    "margin, so a partly occluded or edge-on subject still forms " +
+                    "a usable blob.\n"
+            )
+        }
+        sb.append(
+            "\nSizes are scaled from a measured reference (a fly is " +
+                "1,500-3,000 px at 31 cm on a 12.19MP sensor) by the inverse " +
+                "square of working distance and by sensor resolution.\n"
+        )
+    }
+
+    /**
+     * Per-event diagnostics for the illumination rule.
+     *
+     * Here rather than in a script because a rule you have to move files around
+     * to audit is a rule nobody audits. Every session diagnoses itself, so the
+     * thresholds can be tuned from any run.
+     *
+     * The verdict is produced by the same [IlluminationClassifier] the device
+     * runs, re-applied to the blobs recorded with each event's peak frame. The
+     * signals are ratios, so full-resolution boxes give the same answer as the
+     * working-space blobs the live trigger saw.
+     */
+    private fun appendEventDiagnostics(sb: StringBuilder) {
+        sb.append("\n## Event diagnostics\n\n")
+        val scored = eventRows.entries.filter { it.value.peakBlobs.isNotEmpty() }
+        if (scored.isEmpty()) {
+            sb.append(
+                "No event recorded a blob to score. Nothing to tune the " +
+                    "illumination rule against from this session.\n"
+            )
+            return
+        }
+        sb.append(
+            "| Event | Peak area (px) | % frame | Edges | Opposite | Fill | Blobs | Spread | Verdict |\n"
+        )
+        sb.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+        var disagreements = 0
+        for ((id, r) in scored) {
+            val a: IlluminationAssessment =
+                classifier.classify(r.peakBlobs, captureWidth, captureHeight)
+            if (a.verdict.isIllumination) disagreements++
+            val g = a.signals
+            sb.append("| ").append(id)
+                .append(" | ").append(String.format(java.util.Locale.US, "%,d", g.areaPx))
+                .append(" | ").append(String.format(java.util.Locale.US, "%.2f%%", g.areaFraction * 100))
+                .append(" | ").append(g.edgesTouched).append(if (a.edgeSignal) "*" else "")
+                .append(" | ").append(if (g.oppositeEdges) "yes" else "no")
+                .append(" | ").append(String.format(java.util.Locale.US, "%.2f", g.fillRatio))
+                .append(if (a.fillSignal) "*" else "")
+                .append(" | ").append(g.blobCount)
+                .append(" | ").append(String.format(java.util.Locale.US, "%.0f%%", g.spreadFraction * 100))
+                .append(if (a.countSignal) "*" else "")
+                .append(" | ").append(a.describe())
+                .append(" |\n")
+        }
+        sb.append(
+            "\nA `*` marks a signal that fired. Gates: illumination on size alone " +
+                "at " + String.format(java.util.Locale.US, "%.1f%%", trigger.illuminationAreaFraction * 100) +
+                " of frame; examined above " +
+                String.format(java.util.Locale.US, "%.1f%%", trigger.illuminationSuspectFraction * 100) +
+                ", where " + trigger.illuminationSignalsRequired +
+                " of 3 signals are needed. Signals are edge contact (two opposite " +
+                "edges or three of four), fill ratio below " +
+                String.format(java.util.Locale.US, "%.2f", trigger.illuminationFillRatioMax) +
+                ", and " + trigger.illuminationBlobCountMin +
+                "+ blobs spread over " +
+                String.format(java.util.Locale.US, "%.0f%%", trigger.illuminationSpreadFractionMin * 100) +
+                " of the frame diagonal.\n"
+        )
+        if (disagreements > 0) {
+            sb.append('\n').append("**").append(disagreements)
+                .append(if (disagreements == 1) " event was" else " events were")
+                .append(" captured that the rule would judge differently now.** ")
+                .append("They were recorded as detections at the time, so either ")
+                .append("the thresholds have changed since, or these are the ")
+                .append("artefacts the rule was tightened to catch. Either way ")
+                .append("they are the rows to look at.\n")
+        }
     }
 
     /**

@@ -337,6 +337,15 @@ data class IlluminationEvent(
     /** Pixels the background model re-baselined in response. */
     val rebaselinedPixels: Int,
     val frameIndex: Long,
+    /** `size` when the certain gate alone decided it, otherwise `corroborated`. */
+    val basis: String = "size",
+    val edgesTouched: Int = 0,
+    val oppositeEdges: Boolean = false,
+    val fillRatio: Float = 0f,
+    val blobCount: Int = 0,
+    val spreadFraction: Float = 0f,
+    /** How many of the three corroborating signals fired. */
+    val signals: Int = 0,
 ) : ManifestRecord {
     override val type: String get() = "illumination_event"
     override fun toJsonLine(): String = line(
@@ -346,6 +355,15 @@ data class IlluminationEvent(
         "area_fraction" to (if (workPixels == 0) 0f else areaPx.toFloat() / workPixels),
         "rebaselined_px" to rebaselinedPixels,
         "frame" to frameIndex,
+        // Why, not only what: a threshold nobody can audit is a threshold
+        // nobody can tune.
+        "basis" to basis,
+        "edges" to edgesTouched,
+        "opposite_edges" to oppositeEdges,
+        "fill_ratio" to fillRatio,
+        "blobs" to blobCount,
+        "spread_fraction" to spreadFraction,
+        "signals" to signals,
     )
 }
 

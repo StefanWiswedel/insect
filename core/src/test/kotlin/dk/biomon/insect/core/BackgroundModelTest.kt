@@ -32,15 +32,24 @@ class BackgroundModelTest {
 
     @Test
     fun `moving target at centre triggers`() {
+        val config = TriggerConfig(warmupSeconds = 2)
         val scene = SyntheticScene()
-        val trigger = MotionTrigger(TriggerConfig(warmupSeconds = 2))
+        val trigger = MotionTrigger(config)
         warmUp(trigger, scene)
         val target = Rect.centredOn(scene.width / 2, scene.height / 2, 16)
         val decision = trigger.onFrame(scene.frame(target))
         assertTrue(decision.motion) { "centre target missed" }
         val blob = decision.largest!!
-        assertTrue(blob.centroidX in 70f..90f) { "centroid x ${blob.centroidX}" }
-        assertTrue(blob.centroidY in 50f..70f) { "centroid y ${blob.centroidY}" }
+        // Expected position derived from the working frame rather than written
+        // out, so changing the downsample cannot silently invalidate the test.
+        val expectedX = (scene.width / config.downsample) / 2f
+        val expectedY = (scene.height / config.downsample) / 2f
+        assertTrue(kotlin.math.abs(blob.centroidX - expectedX) < 10f) {
+            "centroid x ${blob.centroidX}, expected near $expectedX"
+        }
+        assertTrue(kotlin.math.abs(blob.centroidY - expectedY) < 10f) {
+            "centroid y ${blob.centroidY}, expected near $expectedY"
+        }
     }
 
     /**
@@ -174,7 +183,7 @@ class BackgroundModelTest {
         warmUp(trigger, scene)
         val whole = Rect(0, 0, scene.width, scene.height)
         val d = trigger.onFrame(scene.frame(whole, contrast = 0.4f))
-        assertTrue(d.rejectedTooLarge > 0) { "whole-frame change was not rejected" }
+        assertTrue(d.illumination) { "whole-frame change was not called illumination" }
         assertTrue(d.blobs.isEmpty()) { "whole-frame change produced blobs: ${d.blobs.size}" }
     }
 
@@ -199,9 +208,9 @@ class BackgroundModelTest {
         assertTrue(d.illumination) { "a quarter-frame blob was not called illumination" }
         assertFalse(d.motion) { "an illumination event must suppress capture" }
         assertTrue(d.blobs.isEmpty()) { "illumination frame still offered blobs" }
-        assertTrue(d.illuminationAreaPx > 0) { "no area recorded for the event" }
-        assertTrue(d.illuminationAreaFraction > 0.02f) {
-            "area fraction ${d.illuminationAreaFraction} below the threshold that fired"
+        assertTrue(d.assessment.signals.areaPx > 0) { "no area recorded for the event" }
+        assertTrue(d.assessment.signals.areaFraction > 0.02f) {
+            "area fraction ${d.assessment.signals.areaFraction} below the gate that fired"
         }
     }
 

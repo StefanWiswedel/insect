@@ -144,7 +144,8 @@ object SessionStore {
         database.sessionOpened(session, appVersion(context))
 
         val scanner = if (hasSharedStorage()) MediaScanner(context) else null
-        val recorder = FileSessionRecorder(session, manifest, database, scanner)
+        val recorder =
+            FileSessionRecorder(session, manifest, database, scanner, settings.trigger)
 
         // Through the recorder, not straight at the manifest: recorder.record()
         // also feeds SUMMARY.md, and a fallback that appears only in the JSONL

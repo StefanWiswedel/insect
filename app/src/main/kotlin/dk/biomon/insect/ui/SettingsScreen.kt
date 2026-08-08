@@ -136,7 +136,20 @@ fun SettingsScreen(repository: SettingsRepository, onBack: () -> Unit) {
                 range = SettingsRanges.minBlobAreaPx,
                 format = { "${it.roundToInt()} px" },
             ) { v -> edit { it.copy(trigger = it.trigger.copy(minBlobAreaPx = v.roundToInt())) } }
-            Note("In downsampled analysis pixels, not sensor pixels.")
+            Note("In working (post-downsample) pixels, not sensor pixels.")
+
+            SettingSlider(
+                label = "Analysis downsample",
+                value = settings.trigger.downsample.toFloat(),
+                range = SettingsRanges.downsample,
+                format = { "${it.roundToInt()}x" },
+            ) { v -> edit { it.copy(trigger = it.trigger.copy(downsample = v.roundToInt())) } }
+            Note(
+                "Higher reduces noise but costs target area as the square: at 4x " +
+                    "a fly at 31cm was under the minimum blob area, so the rig " +
+                    "could not see its own subject. Check the Detection geometry " +
+                    "section of SUMMARY.md after changing this."
+            )
 
             SettingSlider(
                 label = "Illumination threshold",

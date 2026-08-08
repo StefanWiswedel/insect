@@ -73,6 +73,25 @@ fun CaptureScreen(
         onDispose { CaptureBus.previewWanted = false }
     }
 
+    // Framing takes over the whole screen: the point is to see the scene, and a
+    // preview boxed into a corner above a wall of readings is what made checking
+    // the aim awkward enough to skip.
+    if (state.previewing) {
+        FramingScreen(
+            state = state,
+            settings = settings,
+            onFocusChange = { diopters ->
+                CaptureService.setFocusDiopters(diopters)
+                scope.launch {
+                    settingsRepository.update { it.copy(focusDistanceDiopters = diopters) }
+                }
+            },
+            onStartRecording = { CaptureService.startRecording(context) },
+            onClose = { CaptureService.stop(context) },
+        )
+        return
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -126,6 +145,15 @@ fun CaptureScreen(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             ) {
                 Text(if (state.running) "Stop session" else "Start session")
+            }
+            if (!state.running) {
+                TextButton(
+                    onClick = { CaptureService.startPreview(context) },
+                    enabled = permissionsGranted,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Preview / check framing")
+                }
             }
             TextButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
                 Text("Settings")
@@ -188,7 +216,7 @@ private fun focusLabel(diopters: Float): String =
  * the mask overlay sits exactly on the pixels the trigger judged.
  */
 @Composable
-private fun PreviewImage(state: CaptureUiState, modifier: Modifier = Modifier) {
+internal fun PreviewImage(state: CaptureUiState, modifier: Modifier = Modifier) {
     val preview = state.preview
     if (preview == null) {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {

@@ -295,6 +295,83 @@ class SessionSummaryTest {
         assertTrue(s.render().contains("Nothing changed the whole scene's brightness at once"))
     }
 
+    /**
+     * The section that exists so the rig can never again be silently blind to
+     * its subject. It must state the numbers, and it must say plainly when they
+     * are wrong.
+     */
+    @Test
+    fun `detection geometry is reported and says plainly when the rig is blind`() {
+        val blind = SessionSummary(TriggerConfig(downsample = 4, minBlobAreaPx = 4))
+        blind.observe(started())
+        val md = blind.render()
+        assertTrue(md.contains("## Detection geometry")) { md }
+        assertTrue(md.contains("**Working distance**: 31 cm")) { md }
+        assertTrue(md.contains("**Minimum blob area**: 4 px")) { md }
+        assertTrue(md.contains("cannot see its own target")) { md }
+    }
+
+    @Test
+    fun `detection geometry reports margin when the configuration is sound`() {
+        val ok = SessionSummary(TriggerConfig())
+        ok.observe(started())
+        val md = ok.render()
+        assertFalse(md.contains("cannot see its own target")) { md }
+        assertTrue(md.contains("clears the minimum blob area with")) { md }
+        assertTrue(md.contains("320x240")) { md }
+    }
+
+    /**
+     * The rule has to diagnose itself from every session, or it can only be
+     * tuned by someone willing to move files around and run a script.
+     */
+    @Test
+    fun `event diagnostics report the signals and the verdict the rule gave`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(EventStarted(t0 + 1_000, 3))
+        // An edge-spanning band: the 88k-px artefact shape from 050826_0.
+        s.observe(
+            FrameWritten(
+                t0 + 1_100, 3, 0, "a.jpg", "moving", 4_000_000,
+                listOf(Blob(0, 1200, 4079, 1400, 88_000, 2040f, 1300f)),
+            )
+        )
+        val md = s.render()
+
+        assertTrue(md.contains("## Event diagnostics")) { md }
+        assertTrue(md.contains("88,000")) { md }
+        assertTrue(md.contains("yes")) { "opposite-edge flag missing: $md" }
+        // The rule would now call this illumination, which is the tuning signal.
+        assertTrue(md.contains("illumination")) { md }
+        assertTrue(md.contains("would judge differently now")) { md }
+    }
+
+    @Test
+    fun `event diagnostics say so when there is nothing to score`() {
+        val s = SessionSummary()
+        s.observe(started())
+        assertTrue(s.render().contains("No event recorded a blob to score")) {
+            s.render()
+        }
+    }
+
+    @Test
+    fun `an insect-sized blob is diagnosed as a detection`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(EventStarted(t0 + 1_000, 1))
+        s.observe(
+            FrameWritten(
+                t0 + 1_100, 1, 0, "a.jpg", "moving", 4_000_000,
+                listOf(Blob(2000, 1500, 2055, 1555, 2_400, 2027f, 1527f)),
+            )
+        )
+        val md = s.render()
+        assertTrue(md.contains("| detection")) { md }
+        assertFalse(md.contains("would judge differently now")) { md }
+    }
+
     @Test
     fun `thermal status is surfaced when the platform reports one`() {
         val s = SessionSummary()

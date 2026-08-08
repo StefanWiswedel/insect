@@ -5,6 +5,8 @@ import dk.biomon.insect.core.TriggerConfig
 import dk.biomon.insect.core.background.EmaBackgroundModel
 import dk.biomon.insect.core.blob.Blob
 import dk.biomon.insect.core.blob.BlobDetector
+import dk.biomon.insect.core.illumination.IlluminationAssessment
+import dk.biomon.insect.core.illumination.IlluminationClassifier
 
 /** What the trigger concluded about one analysis frame. */
 data class TriggerDecision(
@@ -24,18 +26,17 @@ data class TriggerDecision(
      * re-baseline supersedes it -- see [rebaselinedPixels].
      */
     val forcedRefreshPixels: Int,
-    /** Components excluded for exceeding the area ceiling. */
-    val rejectedTooLarge: Int,
     /**
-     * True when a component covered more than
-     * [TriggerConfig.illuminationAreaFraction] of the frame. The scene's
-     * lighting changed; nothing here is a subject.
+     * The illumination rule's verdict on this frame, with the measurements
+     * behind it. Present on every frame that had blobs, not only on the ones
+     * that were suppressed, so a detection can be shown as the near-miss it was.
+     */
+    val assessment: IlluminationAssessment,
+    /**
+     * True when the rule called this frame illumination rather than a subject:
+     * either on size alone, or on size plus corroborating shape and position.
      */
     val illumination: Boolean,
-    /** Area of the largest oversized component, in downsampled working pixels. */
-    val illuminationAreaPx: Int,
-    /** That area as a fraction of the frame -- the resolution-independent figure. */
-    val illuminationAreaFraction: Float,
     /** Pixels adopted by the whole-model re-baseline, non-zero only on an illumination frame. */
     val rebaselinedPixels: Int,
     val warmingUp: Boolean,
@@ -61,7 +62,8 @@ class MotionTrigger(
     // interval from frame timestamps, so it stays correct when thermal backoff
     // moves the rate underneath it.
     private val background = EmaBackgroundModel(config)
-    private val detector = BlobDetector(config.minBlobAreaPx, config.illuminationAreaFraction)
+    private val detector = BlobDetector(config.minBlobAreaPx)
+    private val classifier = IlluminationClassifier(config)
 
     /**
      * Scales a working-coordinate blob into full-resolution capture coordinates,
@@ -78,14 +80,13 @@ class MotionTrigger(
         } else {
             detector.detect(result.mask, result.workWidth, result.workHeight)
         }
-        val workPixels = result.workWidth * result.workHeight
-
-        // An oversized component is an illumination change, not a subject. Treat
-        // it as an event in its own right rather than discarding it: outdoors,
-        // cloud shadow crossing the board does this repeatedly, and how often the
-        // light moved is something the laptop side needs to know.
-        val oversizedAreaPx = if (result.warmingUp) 0 else detector.lastOversizedAreaPx
-        val illumination = oversizedAreaPx > 0
+        // Size gates entry, then shape and position decide. A blob big enough to
+        // be the light changing is treated as an event in its own right rather
+        // than discarded: outdoors, cloud shadow crossing the board does this
+        // repeatedly, and how often the light moved is something the laptop side
+        // needs to know.
+        val assessment = classifier.classify(blobs, result.workWidth, result.workHeight)
+        val illumination = assessment.verdict.isIllumination
 
         // The re-baseline supersedes any per-pixel forced refresh on this frame,
         // so exactly one refresh is reported. See EmaBackgroundModel.rebaseline.
@@ -101,11 +102,8 @@ class MotionTrigger(
             motion = !illumination && blobs.isNotEmpty(),
             foregroundFraction = result.foregroundFraction,
             forcedRefreshPixels = forcedRefreshPixels,
-            rejectedTooLarge = detector.lastRejectedTooLarge,
+            assessment = assessment,
             illumination = illumination,
-            illuminationAreaPx = oversizedAreaPx,
-            illuminationAreaFraction =
-                if (workPixels == 0) 0f else oversizedAreaPx.toFloat() / workPixels,
             rebaselinedPixels = rebaselined,
             warmingUp = result.warmingUp,
             workWidth = result.workWidth,

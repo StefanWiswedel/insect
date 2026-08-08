@@ -16,6 +16,7 @@ import dk.biomon.insect.core.event.EventEndReason
 import dk.biomon.insect.core.event.EventStateMachine
 import dk.biomon.insect.core.manifest.Degradation
 import dk.biomon.insect.core.manifest.ForcedRefresh
+import dk.biomon.insect.core.illumination.IlluminationVerdict
 import dk.biomon.insect.core.manifest.IlluminationEvent
 import dk.biomon.insect.core.manifest.RateChanged
 import dk.biomon.insect.core.manifest.WarmupEnded
@@ -127,13 +128,22 @@ class AnalysisPipeline(
         // the trigger zeroes forcedRefreshPixels to say so.
         if (decision.illumination) {
             illuminationEvents++
+            val a = decision.assessment
             recorder.record(
                 IlluminationEvent(
                     atMillis = nowMillis,
-                    areaPx = decision.illuminationAreaPx,
+                    areaPx = a.signals.areaPx,
                     workPixels = decision.workWidth * decision.workHeight,
                     rebaselinedPixels = decision.rebaselinedPixels,
                     frameIndex = decision.frameIndex,
+                    basis = if (a.verdict == IlluminationVerdict.ILLUMINATION_CERTAIN) "size"
+                    else "corroborated",
+                    edgesTouched = a.signals.edgesTouched,
+                    oppositeEdges = a.signals.oppositeEdges,
+                    fillRatio = a.signals.fillRatio,
+                    blobCount = a.signals.blobCount,
+                    spreadFraction = a.signals.spreadFraction,
+                    signals = a.corroborating,
                 )
             )
         } else if (decision.forcedRefreshPixels > 0) {

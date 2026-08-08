@@ -131,6 +131,11 @@ class MaskSnapshot(
 /** What the one screen shows. Published by capture, read by the UI. */
 data class CaptureUiState(
     val running: Boolean = false,
+    /**
+     * Framing mode: the camera and analysis are live, but nothing is written and
+     * no session exists. Mutually exclusive with [running].
+     */
+    val previewing: Boolean = false,
     val sessionId: String? = null,
     val stats: SessionStats = SessionStats(),
     val guard: GuardState? = null,

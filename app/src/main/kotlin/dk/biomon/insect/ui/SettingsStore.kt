@@ -56,6 +56,7 @@ internal object SettingsRanges {
     val minContrastFraction = 0.005f..0.15f
     val noiseSigmas = 1.5f..10f
     val minBlobAreaPx = 1f..64f
+    val downsample = 1f..4f
     val forcedRefreshSeconds = 15f..900f
     // A fraction of frame area, so it survives a resolution change. The low
     // end is still ~10x a 25cm insect; the high end is a quarter of the frame,
@@ -75,6 +76,7 @@ private object Keys {
     val minContrastFraction = floatPreferencesKey("min_contrast_fraction")
     val noiseSigmas = floatPreferencesKey("noise_sigmas")
     val minBlobAreaPx = intPreferencesKey("min_blob_area_px")
+    val downsample = intPreferencesKey("downsample")
     val forcedRefreshSeconds = intPreferencesKey("forced_refresh_seconds")
     val illuminationAreaFraction = floatPreferencesKey("illumination_area_fraction")
     val focusDiopters = floatPreferencesKey("focus_diopters")
@@ -98,6 +100,7 @@ private fun settingsOf(
     minContrastFraction: Float,
     noiseSigmas: Float,
     minBlobAreaPx: Int,
+    downsample: Int,
     forcedRefreshSeconds: Int,
     illuminationAreaFraction: Float,
     focusDiopters: Float,
@@ -110,6 +113,10 @@ private fun settingsOf(
         minBlobAreaPx = minBlobAreaPx.coerceIn(
             SettingsRanges.minBlobAreaPx.start.toInt(),
             SettingsRanges.minBlobAreaPx.endInclusive.toInt(),
+        ),
+        downsample = downsample.coerceIn(
+            SettingsRanges.downsample.start.toInt(),
+            SettingsRanges.downsample.endInclusive.toInt(),
         ),
         forcedRefreshSeconds = forcedRefreshSeconds.coerceIn(
             SettingsRanges.forcedRefreshSeconds.start.toInt(),
@@ -155,6 +162,7 @@ private fun AppSettings.clamped(): AppSettings = settingsOf(
     minContrastFraction = trigger.minContrastFraction,
     noiseSigmas = trigger.noiseSigmas,
     minBlobAreaPx = trigger.minBlobAreaPx,
+    downsample = trigger.downsample,
     forcedRefreshSeconds = trigger.forcedRefreshSeconds,
     illuminationAreaFraction = trigger.illuminationAreaFraction,
     focusDiopters = focusDistanceDiopters,
@@ -169,6 +177,7 @@ private fun Preferences.toSettings(): AppSettings = settingsOf(
     minContrastFraction = this[Keys.minContrastFraction] ?: DEFAULTS.trigger.minContrastFraction,
     noiseSigmas = this[Keys.noiseSigmas] ?: DEFAULTS.trigger.noiseSigmas,
     minBlobAreaPx = this[Keys.minBlobAreaPx] ?: DEFAULTS.trigger.minBlobAreaPx,
+    downsample = this[Keys.downsample] ?: DEFAULTS.trigger.downsample,
     forcedRefreshSeconds = this[Keys.forcedRefreshSeconds] ?: DEFAULTS.trigger.forcedRefreshSeconds,
     illuminationAreaFraction =
         this[Keys.illuminationAreaFraction] ?: DEFAULTS.trigger.illuminationAreaFraction,
@@ -184,6 +193,7 @@ private fun AppSettings.writeInto(prefs: androidx.datastore.preferences.core.Mut
     prefs[Keys.minContrastFraction] = trigger.minContrastFraction
     prefs[Keys.noiseSigmas] = trigger.noiseSigmas
     prefs[Keys.minBlobAreaPx] = trigger.minBlobAreaPx
+    prefs[Keys.downsample] = trigger.downsample
     prefs[Keys.forcedRefreshSeconds] = trigger.forcedRefreshSeconds
     prefs[Keys.illuminationAreaFraction] = trigger.illuminationAreaFraction
     prefs[Keys.focusDiopters] = focusDistanceDiopters
