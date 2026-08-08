@@ -2,12 +2,9 @@ package dk.biomon.insect.ui
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.googlefonts.GoogleFont
 import androidx.compose.ui.unit.sp
-import dk.biomon.insect.R
 
 /**
  * Type for an instrument, not an app.
@@ -22,37 +19,34 @@ import dk.biomon.insect.R
  * monospaced by construction, and `tnum` is set as well so the fallback face is
  * tabular too.
  *
- * The faces are **downloadable**, resolved on-device through Play Services
- * rather than bundled, because the font files could not be fetched into this
- * build. Every family names an explicit system fallback, so a device that cannot
- * reach the provider gets the right *shape* of type -- and critically, numerals
- * still land on a monospaced face, which is the property that matters most.
+ * **The three named faces are not in this build**, and these are system stand-ins
+ * chosen to match their category: serif for display, sans for UI, monospace for
+ * numerals. Two things blocked them and both need something from outside this
+ * environment:
+ *
+ * * The font files could not be fetched -- `fonts.google.com` is refused by this
+ *   build environment's network policy -- so they cannot be bundled.
+ * * Downloadable fonts through Play Services need the provider's certificate
+ *   array, which `ui-text-google-fonts` does not ship. Writing that blob from
+ *   memory is not acceptable: a wrong certificate does not fail loudly, it makes
+ *   every font silently fall back forever.
+ *
+ * Swapping the real faces in is a change to these three declarations and nothing
+ * else, once either the `.ttf` files land in `res/font/` or the certificate
+ * array lands in `res/values/`.
+ *
+ * What survives the substitution is the part that matters operationally:
+ * numerals are monospaced and tabular either way, so readings do not twitch.
  */
-private val provider = GoogleFont.Provider(
-    providerAuthority = "com.google.android.gms.fonts",
-    providerPackage = "com.google.android.gms",
-    certificates = R.array.com_google_android_gms_fonts_certs,
-)
+private val displayFont = FontFamily.Serif
 
-private val displayFont = FontFamily(
-    Font(GoogleFont("Fraunces"), provider, FontWeight.Normal),
-    Font(GoogleFont("Fraunces"), provider, FontWeight.SemiBold),
-)
-
-private val uiFont = FontFamily(
-    Font(GoogleFont("Instrument Sans"), provider, FontWeight.Normal),
-    Font(GoogleFont("Instrument Sans"), provider, FontWeight.Medium),
-    Font(GoogleFont("Instrument Sans"), provider, FontWeight.SemiBold),
-)
+private val uiFont = FontFamily.SansSerif
 
 /**
  * Numerals. Use this for every value that changes while the screen is up:
  * readings, counts, sizes, temperatures, focus distance.
  */
-val NumericFont = FontFamily(
-    Font(GoogleFont("Martian Mono"), provider, FontWeight.Normal),
-    Font(GoogleFont("Martian Mono"), provider, FontWeight.Medium),
-)
+val NumericFont = FontFamily.Monospace
 
 /** Tabular figures, so the fallback face does not jitter either. */
 const val TABULAR = "tnum"

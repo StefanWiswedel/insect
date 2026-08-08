@@ -720,11 +720,19 @@ environment. Surface elevations, the muted ink steps, the spacing scale and the
 type scale are therefore derived rather than specified, and should be replaced
 when the file is available.
 
-**Fonts are downloadable, not bundled**, resolved on-device through Play
-Services, because font files could not be fetched into the build. Every family
-names a system fallback, so a device that cannot reach the provider still gets
-the right shape of type — and numerals still land on a monospaced face, which is
-the property that matters.
+**The three named faces are not in the build yet.** System stand-ins are used,
+matched by category: serif for display, sans for UI, monospace for numerals. Two
+things blocked the real ones and both need something from outside the build
+environment — the font files could not be fetched (`fonts.google.com` is refused
+by network policy, so they cannot be bundled), and downloadable fonts through
+Play Services need a provider certificate array that `ui-text-google-fonts` does
+not ship. That blob was not written from memory: a wrong certificate does not
+fail loudly, it makes every font fall back silently and permanently.
+
+Swapping them in is a change to three declarations in `Type.kt`, once either the
+`.ttf` files land in `res/font/` or the certificate array lands in
+`res/values/`. What survives the substitution is the operational part: numerals
+are monospaced and tabular either way, so readings do not twitch.
 
 ### Window insets
 
