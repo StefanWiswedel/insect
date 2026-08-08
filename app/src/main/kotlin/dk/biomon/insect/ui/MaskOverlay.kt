@@ -98,5 +98,5 @@ fun LumaImage(preview: PreviewFrame, modifier: Modifier = Modifier) {
     )
 }
 
-/** StateGreen at a third alpha: visible over the preview, not opaque. */
-private const val MASK_ARGB = 0x5557A05B
+/** `--alive` at a third alpha: visible over the preview, not opaque. */
+private const val MASK_ARGB = 0x559CC471

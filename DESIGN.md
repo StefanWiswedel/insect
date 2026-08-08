@@ -686,12 +686,60 @@ nothing about the sensor, and captured frames are never rotated to match it —
 doing so would silently change the coordinate system the blob boxes are recorded
 in.
 
-`.claude/skills/biomon-ui/SKILL.md` is **not present** in this repository, so
-there are no Biomon tokens to follow. Per the brief, the UI is therefore kept
-plain and dark rather than inventing a second visual identity — a neutral dark
-Material 3 scheme, no accent colour beyond a single state green/amber/red for
-capture state, no decoration. If the skill later lands, restyling is confined to
-the theme file.
+### Visual language
+
+The Biomon design system, so this reads as the same instrument as the bird
+station rather than as a second identity. `Theme.kt` carries the tokens and
+`Type.kt` the faces; both are the only files restyling should need to touch.
+
+| Token | Value | Use |
+| --- | --- | --- |
+| `--bg` | `#100D0B` | Warm near-black ground |
+| `--ink` | `#F4EDE2` | Body text and readings |
+| `--alive` | `#9CC471` | Working as intended; also the mask overlay |
+| `--ember` | `#E8A33D` | Degraded but running: disk pressure, thermal backoff |
+| `--signal` | `#FF6B4A` | **Rare events only**: capture stopped, outstanding error |
+
+Fraunces for display, Instrument Sans for UI, Martian Mono for numerals.
+
+**All numerals are monospaced with tabular figures.** Not decoration: a reading
+whose glyph widths change as the value changes makes the row twitch, and on a
+screen read at a glance to answer "is this still working", movement in the
+layout reads as movement in the data.
+
+Three tiers of hierarchy on the session screen, in the order the field asks for
+them: **state** first, colour-coded and the only thing on that screen carrying
+colour; then the three numbers that decide whether the rig survives the day —
+free space, battery, temperature — large, and coloured only when they turn bad;
+then everything else small, present to be auditable rather than to be read
+before walking away.
+
+**Still missing from the design system as adapted here.** The faces and the five
+colours came from the brief; `SKILL.md` itself could not be reached from this
+environment. Surface elevations, the muted ink steps, the spacing scale and the
+type scale are therefore derived rather than specified, and should be replaced
+when the file is available.
+
+**Fonts are downloadable, not bundled**, resolved on-device through Play
+Services, because font files could not be fetched into the build. Every family
+names a system fallback, so a device that cannot reach the provider still gets
+the right shape of type — and numerals still land on a monospaced face, which is
+the property that matters.
+
+### Window insets
+
+Android is edge-to-edge from API 35 whether or not the app asks, so insets are
+consumed deliberately rather than inherited. `enableEdgeToEdge()` is called
+explicitly to make that a decision rather than an accident.
+
+The rule is per-surface, not global: the **camera preview runs full-bleed behind
+the system bars**, because the point of framing is to see as much of the scene as
+the screen can show, while **every interactive control sits inside
+`WindowInsets.safeDrawing`**. On the framing screen the control panels' scrims
+extend under the bars and only their contents are inset, so the image is never
+cut by a hard edge. Taking the value from the system rather than hard-coding
+padding is what makes this correct under both gesture and three-button
+navigation, whose bar heights differ by roughly threefold.
 
 ---
 

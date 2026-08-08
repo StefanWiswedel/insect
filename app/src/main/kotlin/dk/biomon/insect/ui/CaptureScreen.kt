@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -25,8 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dk.biomon.insect.AppSettings
@@ -96,6 +97,11 @@ fun CaptureScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // Inside the bars, not under them. safeDrawing covers status
+                // bar, navigation bar (gesture *or* three-button, whose heights
+                // differ) and any display cutout, so the value is read from the
+                // system rather than guessed at as fixed padding.
+                .safeDrawingPadding()
                 .padding(12.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -189,11 +195,7 @@ private fun FocusControl(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Focus", style = MaterialTheme.typography.bodyMedium)
-            Text(
-                text = focusLabel(value),
-                style = MaterialTheme.typography.titleMedium,
-                fontFamily = FontFamily.Monospace,
-            )
+            Text(text = focusLabel(value), style = ReadingStyle, color = Ink)
         }
         Slider(
             value = value.coerceIn(SettingsRanges.focusDiopters),
@@ -248,22 +250,32 @@ private fun StatusHeader(state: CaptureUiState) {
         state.captureMode != null -> "Capturing (${state.captureMode})"
         else -> "Watching"
     }
+    // State is the first thing on the screen and the only thing that carries
+    // colour here. A dot rather than a coloured word alone, because the answer
+    // has to survive being read at arm's length in sun by someone who is
+    // already walking away.
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .padding(end = 10.dp)
+                    .size(10.dp)
+                    .background(colour, CircleShape)
+            )
+            Text(
+                text = label,
+                color = colour,
+                style = MaterialTheme.typography.displaySmall,
+            )
+        }
         Text(
-            text = label,
-            color = colour,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        Text(
-            text = state.sessionId ?: "no session",
-            style = MaterialTheme.typography.bodyMedium,
-            fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            text = state.sessionId ?: "—",
+            style = SmallReadingStyle,
+            color = InkFaint,
         )
     }
 }
@@ -292,9 +304,8 @@ private fun StorageState(
     Reading("Storage", if (fallback) "fallback" else "DCIM/Biomon")
     Text(
         text = path,
-        style = MaterialTheme.typography.bodySmall,
-        fontFamily = FontFamily.Monospace,
-        color = if (fallback) StateAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+        style = SmallReadingStyle,
+        color = if (fallback) Ember else InkFaint,
     )
     if (fallback) {
         Warning(
@@ -348,17 +359,84 @@ private fun Warning(text: String, colour: Color) {
     Text(text = text, color = colour, style = MaterialTheme.typography.bodySmall)
 }
 
+/**
+ * Three tiers, in the order the field actually asks for them.
+ *
+ * Tier one is state, above. Tier two is the three numbers that decide whether
+ * the rig survives the day -- free space, battery, temperature -- large enough
+ * to read without stopping. Everything else is tier three, present because it
+ * should be auditable, small because nobody checks it before walking away.
+ */
 @Composable
 private fun Readings(state: CaptureUiState) {
     val guard = state.guard
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Vital(
+            "FREE",
+            guard?.let { "%.1f".format(it.freeBytes / 1e9) } ?: "—",
+            "GB",
+            // Storage is the binding constraint on a deployment, so it is the
+            // one that earns colour when it starts to run out.
+            when {
+                guard == null -> InkFaint
+                guard.disk == DiskLevel.STOPPED -> Signal
+                guard.disk == DiskLevel.DEGRADED -> Ember
+                else -> Ink
+            },
+        )
+        Vital(
+            "BATTERY",
+            guard?.batteryPercent?.toString() ?: "—",
+            "%",
+            when {
+                guard == null -> InkFaint
+                guard.batteryPercent in 0..10 -> Signal
+                guard.batteryPercent in 0..25 -> Ember
+                else -> Ink
+            },
+        )
+        Vital(
+            "TEMP",
+            guard?.let { "%.1f".format(it.temperatureCelsius) } ?: "—",
+            "°C",
+            when {
+                guard == null -> InkFaint
+                guard.thermal == ThermalLevel.STOPPED -> Signal
+                guard.thermal == ThermalLevel.REDUCED -> Ember
+                else -> Ink
+            },
+        )
+    }
+
     Reading("Events", state.stats.events.toString())
     Reading("Frames", state.stats.frames.toString())
     Reading("Written", "%.2f GB".format(state.stats.bytesWritten / 1e9))
-    Reading("Free", guard?.let { "%.1f GB".format(it.freeBytes / 1e9) } ?: "-")
-    Reading("Battery", guard?.let { "${it.batteryPercent}%" } ?: "-")
-    Reading("Temperature", guard?.let { "%.1f C".format(it.temperatureCelsius) } ?: "-")
     Reading("Analysis", "${state.analysisFps} fps")
-    Reading("Illumination events", state.illuminationEvents.toString())
+    Reading("Illumination", state.illuminationEvents.toString())
+}
+
+/** One of the three numbers that decide whether the deployment survives the day. */
+@Composable
+private fun Vital(label: String, value: String, unit: String, colour: Color) {
+    Column(horizontalAlignment = Alignment.Start) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = InkFaint,
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(text = value, style = PrimaryReadingStyle, color = colour)
+            Text(
+                text = unit,
+                style = MaterialTheme.typography.labelMedium,
+                color = InkFaint,
+                modifier = Modifier.padding(start = 3.dp, bottom = 3.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -370,13 +448,9 @@ private fun Reading(label: String, value: String) {
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
+            color = InkMuted,
         )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyLarge,
-            fontFamily = FontFamily.Monospace,
-        )
+        Text(text = value, style = SmallReadingStyle, color = Ink)
     }
 }

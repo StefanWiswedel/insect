@@ -12,6 +12,7 @@ import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
@@ -54,6 +55,14 @@ class MainActivity : ComponentActivity() {
         // is a portrait posture; the sensor's own orientation is unaffected and
         // captured frames are never rotated to match.
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
+        // Declared rather than inherited. API 35 makes edge-to-edge the default
+        // whether or not this is called, so the choice is only ever between
+        // handling insets deliberately and having content land under the system
+        // bars. Screens consume the insets themselves: the camera preview wants
+        // to run full-bleed behind the bars, while every control must sit inside
+        // them, and that distinction cannot be made from here.
+        enableEdgeToEdge()
 
         permissionsGranted = hasCamera()
         if (!permissionsGranted) requestPermissions.launch(requiredPermissions())

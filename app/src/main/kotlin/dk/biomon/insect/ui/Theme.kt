@@ -6,51 +6,91 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * Dark-only, neutral, and deliberately unstyled.
+ * Biomon tokens, adapted to Compose.
  *
- * There is no `biomon-ui` skill in this repository (DESIGN.md 5), so there are no
- * tokens to follow and inventing a second visual identity would be worse than
- * having none. Everything decorative is therefore absent: no dynamic colour (the
- * tool must read identically on whatever handset is in the field), no custom
- * typography, no elevation games. If the skill ever lands, restyling should be
- * confined to this file.
+ * The warm near-black ground and the four named colours come from the project's
+ * design system, so the insect trap reads as the same instrument as the bird
+ * station rather than as a second identity.
+ *
+ * Restraint is the brief. This is read at a glance in bright sun and then walked
+ * away from for nine hours, so: no dynamic colour (it must look identical on
+ * whatever handset is in the field), no elevation games, and colour used only to
+ * carry state. Everything that is not saying something is grey.
  */
 
-/** Capturing. The only colour the screen wants to show for nine hours. */
-val StateGreen = Color(0xFF57A05B)
+/** `--bg`. Warm near-black; the ground everything sits on. */
+val Bg = Color(0xFF100D0B)
 
-/** Degraded but still recording -- disk pressure, thermal backoff. */
-val StateAmber = Color(0xFFD79A2B)
+/** `--ink`. Warm off-white; body text and readings. */
+val Ink = Color(0xFFF4EDE2)
 
-/** Capture has stopped, or an error is outstanding. */
-val StateRed = Color(0xFFC4544B)
+/** `--alive`. Working as intended: capturing, watching, healthy. */
+val Alive = Color(0xFF9CC471)
 
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFFB9C2C9),
-    onPrimary = Color(0xFF11161A),
-    primaryContainer = Color(0xFF232A30),
-    onPrimaryContainer = Color(0xFFE3E8EC),
-    secondary = Color(0xFF9BA5AD),
-    onSecondary = Color(0xFF11161A),
-    secondaryContainer = Color(0xFF1E252A),
-    onSecondaryContainer = Color(0xFFD5DDE3),
-    background = Color(0xFF0B0D0F),
-    onBackground = Color(0xFFE3E8EC),
-    surface = Color(0xFF0B0D0F),
-    onSurface = Color(0xFFE3E8EC),
-    surfaceVariant = Color(0xFF171C21),
-    onSurfaceVariant = Color(0xFF9AA4AC),
-    surfaceContainer = Color(0xFF14191D),
-    surfaceContainerHigh = Color(0xFF1A2025),
-    outline = Color(0xFF3A424A),
-    outlineVariant = Color(0xFF272E34),
-    error = StateRed,
-    onError = Color(0xFF11161A),
-    errorContainer = Color(0xFF3A1F1D),
-    onErrorContainer = Color(0xFFF2D6D3),
+/** `--ember`. Degraded but still running: disk pressure, thermal backoff. */
+val Ember = Color(0xFFE8A33D)
+
+/**
+ * `--signal`. **Rare events only.** Capture stopped, or an outstanding error.
+ *
+ * Reserved deliberately: if it is used for ordinary state it stops meaning
+ * anything, and the one screen that must communicate "this is broken" at a
+ * glance loses its only way of saying so.
+ */
+val Signal = Color(0xFFFF6B4A)
+
+/**
+ * Ink at reduced emphasis, for labels and the rows nobody reads in the field.
+ * Derived from [Ink] rather than being a token of its own.
+ */
+val InkMuted = Color(0xFF9C948A)
+val InkFaint = Color(0xFF6B635B)
+
+/**
+ * Surfaces lifted off [Bg] by warming and lightening it, keeping the same hue.
+ * Derived, not specified -- see the note in DESIGN.md 5 about what is still
+ * missing from the design system.
+ */
+private val Surface1 = Color(0xFF181411)
+private val Surface2 = Color(0xFF221C18)
+private val OutlineWarm = Color(0xFF3A312B)
+private val OutlineFaint = Color(0xFF272120)
+
+/** Kept under the old names so call sites read as state, not as colour. */
+val StateGreen = Alive
+val StateAmber = Ember
+val StateRed = Signal
+
+private val BiomonColors = darkColorScheme(
+    primary = Alive,
+    onPrimary = Bg,
+    primaryContainer = Color(0xFF2B3A22),
+    onPrimaryContainer = Color(0xFFD5E8BE),
+    secondary = Ember,
+    onSecondary = Bg,
+    secondaryContainer = Color(0xFF3A2C16),
+    onSecondaryContainer = Color(0xFFF3DCB6),
+    background = Bg,
+    onBackground = Ink,
+    surface = Bg,
+    onSurface = Ink,
+    surfaceVariant = Surface1,
+    onSurfaceVariant = InkMuted,
+    surfaceContainer = Surface1,
+    surfaceContainerHigh = Surface2,
+    outline = OutlineWarm,
+    outlineVariant = OutlineFaint,
+    error = Signal,
+    onError = Bg,
+    errorContainer = Color(0xFF3D1D16),
+    onErrorContainer = Color(0xFFFFD9CF),
 )
 
 @Composable
 fun BiomonTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = DarkColors, content = content)
+    MaterialTheme(
+        colorScheme = BiomonColors,
+        typography = BiomonTypography,
+        content = content,
+    )
 }

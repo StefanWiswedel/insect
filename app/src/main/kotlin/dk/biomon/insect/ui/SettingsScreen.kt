@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -17,7 +18,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dk.biomon.insect.AppSettings
@@ -50,6 +50,9 @@ fun SettingsScreen(repository: SettingsRepository, onBack: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // The back control sits at the top of this column and was
+                // landing under the status bar.
+                .safeDrawingPadding()
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -223,8 +226,7 @@ private fun SettingSlider(
             Text(label, style = MaterialTheme.typography.bodyMedium)
             Text(
                 format(value),
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
+                style = ReadingStyle,
             )
         }
         Slider(
