@@ -119,6 +119,35 @@ internal battery so a cable failure degrades the session rather than killing it.
 Battery temperature is logged throughout to establish the thermal baseline: the
 Tensor G1 runs warm and the device sits in a closed position outdoors.
 
+#### Measured baseline — Pixel 6a, session 050826_0
+
+The first 6a run. Clean, no camera errors, warm-up timestamps correct.
+
+| | Pixel 6a (050826_0) | Pixel 9a (earlier run) |
+| --- | --- | --- |
+| Draw | 86% → 84% in 5m18s ≈ **3.8W** | ≈ 2.0W |
+| Battery temperature, indoors | **32.1–33.5 °C** | 28.7–30.4 °C |
+| Hours on ~17Wh internal | **~4.5h** at the central estimate | ~8.5h |
+
+Treat the figure as a **2–5W range**, not 3.8W: six samples at 1% battery
+granularity over five minutes means one percentage point either way moves the
+answer a long way. The conclusion survives the error bars regardless — **the 6a
+will not do nine hours on internal battery.** It is roughly double the 9a's
+draw against a budget of 1.89W, so the external power bank is not a
+belt-and-braces measure on this device, it is the power supply. Internal battery
+is the degraded mode.
+
+**This changes the thermal picture.** The design previously treated 40 °C
+backoff as a hot-afternoon exception. On the 6a it is a realistic outdoor
+scenario: the device idles 3.4 °C warmer than the 9a *indoors*, before adding
+direct ambient, an enclosure, and nine hours of continuous camera. The gap from
+the measured 33.5 °C indoor ceiling to the 40 °C reduce threshold is ~6.5 °C,
+which a Copenhagen late-summer afternoon in a closed housing will cover. So the
+reduced-rate path (§4) is a normal operating mode to be validated on a real
+deployment, not a corner case — which is also why every duration in the trigger
+is measured in seconds rather than frames (§3.7): at 2fps those constants have
+to still mean what they say.
+
 ---
 
 ## 0.4 Defaults

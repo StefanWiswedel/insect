@@ -81,6 +81,13 @@ class SessionSummary {
     private class EventRow(val startMillis: Long) {
         var durationMillis: Long = 0
         var frames: Int = 0
+        /**
+         * Frames seen on the wire, independent of [frames], which only arrives
+         * with the closing record. Without this an event that was cut off
+         * mid-flight reports zero frames when its JPEGs are sitting on the card.
+         */
+        var framesObserved: Int = 0
+        var lastFrameMillis: Long = 0
         var peakBlobArea: Int = 0
         var ended = false
     }
@@ -144,6 +151,8 @@ class SessionSummary {
                 frames++
                 bytes += record.bytes
                 val row = eventRows.getOrPut(record.eventId) { EventRow(record.atMillis) }
+                row.framesObserved++
+                row.lastFrameMillis = record.atMillis
                 val peak = record.blobs.maxOfOrNull { it.areaPx } ?: 0
                 if (peak > row.peakBlobArea) row.peakBlobArea = peak
             }
@@ -322,15 +331,46 @@ class SessionSummary {
         } else {
             sb.append("| Event | Start | Duration | Frames | Peak blob area (px) |\n")
             sb.append("| --- | --- | --- | --- | --- |\n")
+            var inferred = 0
+            var emptyEvents = 0
             for ((id, row) in eventRows) {
+                val frames = if (row.ended) maxOf(row.frames, row.framesObserved)
+                else row.framesObserved
+                if (frames == 0) emptyEvents++
+                // An event with no closing record was cut off: the session died
+                // before it could be written. Close it here from what is known
+                // rather than leaving an "open" row that will never be resolved
+                // -- nothing may depend on a clean shutdown having run.
+                val duration = if (row.ended) {
+                    humanDuration(row.durationMillis)
+                } else {
+                    inferred++
+                    val until = if (row.lastFrameMillis > 0) row.lastFrameMillis else end
+                    humanDuration((until - row.startMillis).coerceAtLeast(0)) + " (inferred)"
+                }
                 sb.append("| ").append(id)
                     .append(" | ").append(isoOrDash(row.startMillis))
-                    .append(" | ").append(
-                        if (row.ended) humanDuration(row.durationMillis) else "open"
-                    )
-                    .append(" | ").append(row.frames)
+                    .append(" | ").append(duration)
+                    .append(" | ").append(frames)
                     .append(" | ").append(if (row.peakBlobArea > 0) row.peakBlobArea else 0)
                     .append(" |\n")
+            }
+            if (inferred > 0) {
+                sb.append('\n').append("**").append(inferred)
+                    .append(if (inferred == 1) " event has" else " events have")
+                    .append(" an inferred duration.** No closing record reached the ")
+                    .append("manifest, so the session ended mid-event -- killed, ")
+                    .append("power lost, or still running as this was written. The ")
+                    .append("duration runs to the last frame written, or to the end ")
+                    .append("of the session if no frame was.\n")
+            }
+            if (emptyEvents > 0) {
+                sb.append('\n').append("**").append(emptyEvents)
+                    .append(if (emptyEvents == 1) " event wrote no frames.**" else " events wrote no frames.**")
+                    .append(" The trigger fired and a capture was requested, but no ")
+                    .append("JPEG reached the card before the event closed. Listed ")
+                    .append("rather than dropped: a trigger that never yields a frame ")
+                    .append("is worth seeing.\n")
             }
         }
         return sb.toString()

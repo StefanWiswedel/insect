@@ -173,9 +173,14 @@ data class GuardConfig(
     val lowBatteryStopPercent: Int = 5,
     /**
      * Battery temperature (Celsius) above which the analysis framerate is
-     * reduced. The Tensor G1 runs warm and the phone sits closed up outdoors, so
-     * this is expected to be reached on a hot afternoon rather than being an
-     * exceptional condition.
+     * reduced.
+     *
+     * Expected to be reached on an ordinary outdoor afternoon, not exceptionally.
+     * Session 050826_0 measured the 6a idling at 32.1-33.5C *indoors* -- 3.4C
+     * warmer than the 9a -- leaving only ~6.5C of headroom before this threshold,
+     * which ambient plus an enclosure plus nine hours of continuous camera will
+     * cover. The reduced-rate path is a normal operating mode here (DESIGN.md
+     * 0.3), which is why every trigger duration is in seconds rather than frames.
      */
     val thermalReduceCelsius: Float = 40f,
     /**

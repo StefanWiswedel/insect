@@ -139,17 +139,62 @@ class SessionSummaryTest {
         assertTrue(md.contains("None. The session ran at full rate throughout.")) { md }
     }
 
+    /**
+     * An event with no closing record is one the session was cut off in the
+     * middle of. It must never be left as an "open" row that nothing will ever
+     * resolve: the frames are on the card, so the row is closed from what is
+     * known and labelled as inferred.
+     */
     @Test
-    fun `an event still open is shown as open rather than as zero duration`() {
+    fun `an event with no closing record is closed from what is known`() {
         val s = SessionSummary()
         s.observe(started())
         s.observe(EventStarted(t0 + 5_000, 7))
         s.observe(
             FrameWritten(t0 + 5_100, 7, 0, "x.jpg", "moving", 4_000_000, emptyList())
         )
-        val md = s.render(t0 + 6_000)
-        assertTrue(md.contains("| 7 |")) { md }
-        assertTrue(md.contains("| open |")) { md }
+        s.observe(
+            FrameWritten(t0 + 7_500, 7, 1, "y.jpg", "moving", 4_000_000, emptyList())
+        )
+        val md = s.render(t0 + 9_000)
+        assertFalse(md.contains("| open |")) { md }
+        // Duration runs to the last frame actually written, not to render time.
+        assertTrue(md.contains("(inferred)")) { md }
+        assertTrue(md.contains("| 2 |")) { "frames observed on the wire were lost: $md" }
+        assertTrue(md.contains("event has an inferred duration")) { md }
+    }
+
+    /**
+     * Session 050826_0 ended mid-event and left event 8 as an open row with zero
+     * frames -- a row that says nothing and can never be completed.
+     */
+    @Test
+    fun `an event cut off before writing anything is reported, not left open`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(EventStarted(t0 + 300_000, 8))
+        s.observe(SessionEnd(t0 + 318_000, "stopped", 8, 240, 14_000_000_000L, 318_000))
+        val md = s.render()
+
+        assertFalse(md.contains("| open |")) { "an open row survived termination: $md" }
+        assertTrue(md.contains("| 8 |")) { md }
+        assertTrue(md.contains("(inferred)")) { md }
+        assertTrue(md.contains("event wrote no frames")) { md }
+    }
+
+    @Test
+    fun `a cleanly closed event is not labelled inferred`() {
+        val s = SessionSummary()
+        s.observe(started())
+        s.observe(EventStarted(t0 + 1_000, 1))
+        s.observe(
+            FrameWritten(t0 + 1_100, 1, 0, "a.jpg", "moving", 4_000_000, emptyList())
+        )
+        s.observe(EventEnded(t0 + 9_000, 1, 1, "motion_ceased", 8_000))
+        val md = s.render()
+        assertFalse(md.contains("(inferred)")) { md }
+        assertFalse(md.contains("wrote no frames")) { md }
+        assertTrue(md.contains("| 8s |")) { md }
     }
 
     /**
