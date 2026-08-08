@@ -573,6 +573,44 @@ transition. **Non-negotiable #5: a one-hour screen-off test producing correctly
 timestamped, correctly focused, correctly exposed frames is the milestone that
 matters.** Everything else is secondary.
 
+#### Stopping it, and coming back from a kill
+
+A foreground service is *supposed* to be hard to stop — that is the whole point
+when the Activity is gone for nine hours — but "hard to stop" must not become
+"cannot be stopped".
+
+**Three ways to stop it**, in order of convenience:
+
+1. **The notification's Stop action.** Labelled `Stop session` or
+   `Close preview` depending on what is running. This is the important one: the
+   notification is `ongoing`, so it cannot be swiped away, and without an action
+   the only route was to open the app.
+2. **In the app**: `Stop session`, or `Close` in framing mode.
+3. **Settings → Apps → Force stop**, which also suppresses the restart below.
+
+**Swiping out of Recents does not stop a recording session**, deliberately —
+that is the case the design exists for. It *does* stop a **framing preview**
+(`onTaskRemoved`), because nothing is being recorded and holding the camera and
+a wake lock open for a dismissed screen buys nothing.
+
+**Restart after a kill.** `START_STICKY` means the platform restarts the service
+after killing the process for memory, and it redelivers a **null intent** — so
+what the service was doing is knowable only from what it wrote down first.
+`ResumeState` (a `SharedPreferences` file, committed synchronously because the
+next kill may be a millisecond away) records `recording` / `preview` / nothing,
+plus the session id.
+
+That distinction is not cosmetic. Resuming blind defaulted to *recording*, so a
+**framing preview that got killed came back recording** — opening a session
+directory and writing frames nobody asked for, which is precisely the
+contamination framing mode exists to prevent, arriving through a different door.
+And a service the user had *stopped* would restart rather than staying stopped.
+
+A session that exists only because its predecessor was killed writes a
+`degradation` record naming the previous session id. Non-negotiable #3: without
+it the corpus grows an extra session directory, with an earlier one that simply
+stops mid-event, and nothing anywhere connects the two.
+
 ### 3.8 Durations are durations, not frame counts
 
 **The analysis rate is not a constant.** Thermal backoff halves it to a floor of

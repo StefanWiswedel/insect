@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.media.Image
 import android.os.Build
 import android.os.Handler
@@ -102,15 +103,88 @@ class CaptureService : Service() {
                 startSession(preview = false)
                 return START_STICKY
             }
+            ACTION_PREVIEW -> {
+                if (!started) startSession(preview = true)
+                return START_STICKY
+            }
         }
-        if (!started) startSession(preview = intent?.action == ACTION_PREVIEW)
-        // START_STICKY: if the OS kills us for memory, come back and keep going.
-        // The session resumes into a new session directory rather than pretending
-        // to be the old one -- see the note in startSession.
-        return START_STICKY
+
+        if (started) return START_STICKY
+
+        if (intent != null) {
+            // An intent with no action we recognise: the UI's plain "start a
+            // session". Still an explicit request, so it is not the restart
+            // path -- the discriminator below is a *null* intent, not an
+            // unrecognised action.
+            startSession(preview = false)
+            return START_STICKY
+        }
+
+        // A null intent means the platform restarted us after killing the
+        // process -- START_STICKY redelivers nothing. What we were doing is
+        // therefore only knowable from what we wrote down before we died.
+        //
+        // Getting this wrong is not cosmetic. Defaulting to "recording" meant a
+        // preview that got killed came back *recording*, opening a session
+        // directory and writing frames nobody asked for -- the exact
+        // contamination framing mode exists to prevent, arriving by a different
+        // door.
+        val previous = ResumeState.read(this)
+        return when (previous.mode) {
+            ResumeState.Mode.RECORDING -> {
+                startSession(
+                    preview = false,
+                    resumedAfterKill = true,
+                    previousSessionId = previous.sessionId,
+                )
+                START_STICKY
+            }
+            ResumeState.Mode.PREVIEW -> {
+                // Come back to framing, which writes nothing. It is also the
+                // safe direction to be wrong in.
+                startSession(preview = true)
+                START_STICKY
+            }
+            else -> {
+                // We were stopped. Do not resurrect: an instrument the user has
+                // switched off staying switched off matters more than uptime.
+                //
+                // startForeground first even though we are about to stop. A
+                // service the platform restarted into the foreground must post
+                // its notification promptly or the platform kills it with
+                // ForegroundServiceDidNotStartInTimeException -- and crashing on
+                // the way out is a worse way to decline than declining cleanly.
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification("stopping"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA,
+                )
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                START_NOT_STICKY
+            }
+        }
     }
 
-    private fun startSession(preview: Boolean = false) {
+    /**
+     * Swiping the app out of Recents.
+     *
+     * A running deployment must survive this -- the Activity is incidental and
+     * the whole design assumes it is gone for nine hours. A *framing* preview
+     * must not: nothing is being recorded, and holding the camera and a wake
+     * lock open for a screen the user has just dismissed is pure cost with no
+     * data to show for it.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (previewing) shutdown("preview_task_removed")
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun startSession(
+        preview: Boolean = false,
+        resumedAfterKill: Boolean = false,
+        previousSessionId: String? = null,
+    ) {
         started = true
         previewing = preview
         stopping = false
@@ -131,6 +205,32 @@ class CaptureService : Service() {
         // session id, nothing counted. See PreviewRecorder.
         recorder = if (preview) PreviewRecorder()
         else SessionStore.open(applicationContext, settings)
+
+        // Written before anything else can kill us, so a restart knows what it
+        // was interrupted doing rather than guessing.
+        ResumeState.write(
+            this,
+            if (preview) ResumeState.Mode.PREVIEW else ResumeState.Mode.RECORDING,
+            if (preview) null else recorder.session.sessionId,
+        )
+
+        // Non-negotiable #3: a session that exists only because the previous one
+        // was killed must say so. Without this the corpus grows an extra session
+        // directory, with an earlier one that simply stops mid-event, and
+        // nothing anywhere connects the two.
+        if (resumedAfterKill) {
+            recorder.record(
+                Degradation(
+                    System.currentTimeMillis(),
+                    "service",
+                    "session started by a platform restart after the process was " +
+                        "killed; the previous session (" +
+                        (previousSessionId ?: "unknown") +
+                        ") ended without a closing record",
+                )
+            )
+        }
+
         powerLogger = PowerLogger(applicationContext, recorder)
         guards = GuardEvaluator(settings.guards, settings.capture, settings.trigger)
 
@@ -373,6 +473,9 @@ class CaptureService : Service() {
         }
         releaseWakeLock()
         CaptureBus.reset()
+        // Cleared last, and only on a path that actually ran: its *absence* is
+        // how a restart tells "the user stopped this" from "we were killed".
+        ResumeState.clear(this)
         started = false
         previewing = false
     }
@@ -380,6 +483,10 @@ class CaptureService : Service() {
     private fun shutdown(reason: String) {
         if (stopping && !started) return
         teardown(reason)
+        // Again, and unconditionally: teardown returns early when nothing was
+        // started, and a stale resume record left behind by that path is exactly
+        // what would make the service come back after being told to stop.
+        ResumeState.clear(this)
         stopping = true
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -438,15 +545,76 @@ class CaptureService : Service() {
         } else {
             detail
         }
+        // The only way to stop a nine-hour foreground service without opening
+        // the app. Its absence was why the thing felt unkillable: the
+        // notification is ongoing, so it cannot be swiped away, and tapping it
+        // only opened the UI.
+        val stop = PendingIntent.getService(
+            this,
+            STOP_REQUEST_CODE,
+            Intent(this, CaptureService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stopLabel = if (previewing) "Close preview" else "Stop session"
         return Notification.Builder(this, InsectApp.CAPTURE_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(open)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, R.drawable.ic_launcher_foreground),
+                    stopLabel,
+                    stop,
+                ).build()
+            )
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
+    }
+
+    /**
+     * What the service was doing, in storage that outlives the process.
+     *
+     * `START_STICKY` redelivers a null intent, so on a restart there is no other
+     * way to know whether we were recording, framing, or already stopped.
+     * `SharedPreferences` rather than the settings `DataStore` because this has
+     * to be readable synchronously inside `onStartCommand`, before anything
+     * suspending can run.
+     */
+    private object ResumeState {
+        enum class Mode { RECORDING, PREVIEW, NONE }
+
+        private const val FILE = "capture_service_resume"
+        private const val KEY_MODE = "mode"
+        private const val KEY_SESSION = "session_id"
+
+        /** The mode read back, together with the session it belonged to. */
+        class Snapshot(val mode: Mode, val sessionId: String?)
+
+        private fun prefs(context: Context) =
+            context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+
+        fun write(context: Context, mode: Mode, sessionId: String?) {
+            // commit(), not apply(): the whole point is to survive a kill that
+            // may land in the next millisecond.
+            prefs(context).edit()
+                .putString(KEY_MODE, mode.name)
+                .putString(KEY_SESSION, sessionId)
+                .commit()
+        }
+
+        fun clear(context: Context) {
+            prefs(context).edit().clear().commit()
+        }
+
+        fun read(context: Context): Snapshot {
+            val p = prefs(context)
+            val mode = runCatching { Mode.valueOf(p.getString(KEY_MODE, null) ?: "NONE") }
+                .getOrDefault(Mode.NONE)
+            return Snapshot(mode, p.getString(KEY_SESSION, null))
+        }
     }
 
     private fun updateNotification(detail: String) {
@@ -469,6 +637,8 @@ class CaptureService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val WAKE_LOCK_TAG = "biomon:insect-capture"
         private const val ACTION_STOP = "dk.biomon.insect.STOP"
+        /** Distinct from the content intent's 0, or the two PendingIntents collide. */
+        private const val STOP_REQUEST_CODE = 1
         private const val ACTION_PREVIEW = "dk.biomon.insect.PREVIEW"
         private const val ACTION_START_RECORDING = "dk.biomon.insect.START_RECORDING"
 
