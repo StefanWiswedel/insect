@@ -63,7 +63,7 @@ fun MaskOverlay(snapshot: MaskSnapshot?, modifier: Modifier = Modifier) {
 
         for (blob in snapshot.blobs) {
             drawRect(
-                color = StateGreen,
+                color = Ember,
                 topLeft = Offset(left + blob.left * scale, top + blob.top * scale),
                 size = Size(blob.width * scale, blob.height * scale),
                 style = Stroke(width = 2f),
@@ -98,5 +98,11 @@ fun LumaImage(preview: PreviewFrame, modifier: Modifier = Modifier) {
     )
 }
 
-/** `--alive` at a third alpha: visible over the preview, not opaque. */
-private const val MASK_ARGB = 0x559CC471
+/**
+ * `--ember` at a third alpha: visible over the preview, not opaque.
+ *
+ * Ember rather than alive because the mask shows *activity* -- what the trigger
+ * currently reads as motion -- not a confirmed detection. Much of what it lights
+ * up is a candidate at best.
+ */
+private const val MASK_ARGB = 0x55E8A33D

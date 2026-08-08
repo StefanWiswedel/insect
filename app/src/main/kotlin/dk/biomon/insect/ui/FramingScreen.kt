@@ -88,9 +88,9 @@ fun FramingScreen(
                 )
                 Text(
                     "No session directory, no frames, no totals. " +
-                        "Green shows what the trigger currently reads as motion.",
+                        "Amber shows what the trigger currently reads as motion.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = InkMuted,
+                    color = InkSoft,
                 )
             }
 
@@ -116,7 +116,7 @@ fun FramingScreen(
                     Text(
                         "Focus",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = InkMuted,
+                        color = InkSoft,
                     )
                     Text(
                         text = focusReading(diopters),

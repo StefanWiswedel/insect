@@ -6,60 +6,84 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * Biomon tokens, adapted to Compose.
+ * Biomon design tokens. Source of truth: `.claude/skills/biomon-ui/SKILL.md`.
  *
- * The warm near-black ground and the four named colours come from the project's
- * design system, so the insect trap reads as the same instrument as the bird
- * station rather than as a second identity.
+ * "Nocturnal field ledger" — warm near-black ground, specimen-label typography,
+ * mostly still. The visual peak is reserved for rare events.
  *
- * Restraint is the brief. This is read at a glance in bright sun and then walked
- * away from for nine hours, so: no dynamic colour (it must look identical on
- * whatever handset is in the field), no elevation games, and colour used only to
- * carry state. Everything that is not saying something is grey.
+ * Shared with the bird station. Neither app changes these unilaterally; the
+ * skill file changes first.
  */
 
-/** `--bg`. Warm near-black; the ground everything sits on. */
+/** `--bg`. Base ground. */
 val Bg = Color(0xFF100D0B)
 
-/** `--ink`. Warm off-white; body text and readings. */
+/** `--bg-raised`. Raised surfaces. */
+val BgRaised = Color(0xFF1A1512)
+
+/** `--bg-sunken`. Sunken wells -- the preview sits in one. */
+val BgSunken = Color(0xFF0A0807)
+
+/** `--ink`. Primary text. */
 val Ink = Color(0xFFF4EDE2)
 
-/** `--alive`. Working as intended: capturing, watching, healthy. */
+/** `--ink-soft`. Secondary text -- **and every candidate or unconfirmed state**. */
+val InkSoft = Color(0xFFA99B8B)
+
+/** `--ink-faint`. Tertiary, labels, disabled. */
+val InkFaint = Color(0xFF6B5F55)
+
+/** `--alive`. Confirmed, capturing, healthy. */
 val Alive = Color(0xFF9CC471)
 
-/** `--ember`. Degraded but still running: disk pressure, thermal backoff. */
+/** `--ember`. Activity, warnings, and the mask overlay. */
 val Ember = Color(0xFFE8A33D)
 
 /**
- * `--signal`. **Rare events only.** Capture stopped, or an outstanding error.
+ * `--signal`. **RESERVED. Never on ordinary UI.**
  *
- * Reserved deliberately: if it is used for ordinary state it stops meaning
- * anything, and the one screen that must communicate "this is broken" at a
- * glance loses its only way of saying so.
+ * In this app that is exactly three states, all of them terminal — the session
+ * is over and a human has to do something:
+ *
+ * * thermal stop
+ * * disk stop
+ * * camera error
+ *
+ * Not warnings. Not degradations. Not "recording". Not low battery, which is a
+ * *planned* graceful shutdown rather than a fault, and so takes [Ember]. If a
+ * fourth use ever appears, it is almost certainly wrong.
  */
 val Signal = Color(0xFFFF6B4A)
 
 /**
- * Ink at reduced emphasis, for labels and the rows nobody reads in the field.
- * Derived from [Ink] rather than being a token of its own.
+ * The spectrogram ramp. Not used in this app -- there is nothing to plot -- but
+ * kept here so that if anything ever is plotted it stays in the family rather
+ * than acquiring a viridis or a turbo.
  */
-val InkMuted = Color(0xFF9C948A)
-val InkFaint = Color(0xFF6B635B)
+val SpectrogramRamp = listOf(
+    Color(0xFF100D0B),
+    Color(0xFF3B2416),
+    Color(0xFF8A4A1E),
+    Color(0xFFE8A33D),
+    Color(0xFFFFF3D6),
+)
 
 /**
- * Surfaces lifted off [Bg] by warming and lightening it, keeping the same hue.
- * Derived, not specified -- see the note in DESIGN.md 5 about what is still
- * missing from the design system.
+ * Candidate state carries **no colour**. Absence of colour means "not yet real".
+ *
+ * That is load-bearing here rather than decorative: the first sessions recorded
+ * artefacts as detections, and a blob sitting over the illumination suspect gate
+ * that has not collected its corroborating signals is exactly a thing that
+ * should not look confirmed.
  */
-private val Surface1 = Color(0xFF181411)
-private val Surface2 = Color(0xFF221C18)
-private val OutlineWarm = Color(0xFF3A312B)
-private val OutlineFaint = Color(0xFF272120)
+val Candidate = InkSoft
 
-/** Kept under the old names so call sites read as state, not as colour. */
-val StateGreen = Alive
-val StateAmber = Ember
-val StateRed = Signal
+/**
+ * Outlines, derived rather than specified -- the skill is silent on them. Warm
+ * steps between [Bg] and [BgRaised] at the same hue.
+ */
+private val OutlineWarm = Color(0xFF3A312B)
+private val OutlineFaint = Color(0xFF241E1A)
 
 private val BiomonColors = darkColorScheme(
     primary = Alive,
@@ -74,10 +98,11 @@ private val BiomonColors = darkColorScheme(
     onBackground = Ink,
     surface = Bg,
     onSurface = Ink,
-    surfaceVariant = Surface1,
-    onSurfaceVariant = InkMuted,
-    surfaceContainer = Surface1,
-    surfaceContainerHigh = Surface2,
+    surfaceVariant = BgRaised,
+    onSurfaceVariant = InkSoft,
+    surfaceContainerLowest = BgSunken,
+    surfaceContainer = BgRaised,
+    surfaceContainerHigh = BgRaised,
     outline = OutlineWarm,
     outlineVariant = OutlineFaint,
     error = Signal,

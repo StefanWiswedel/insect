@@ -317,6 +317,11 @@ class AnalysisPipeline(
                 preview = preview ?: state.preview.takeIf { CaptureBus.previewWanted },
                 warmingUp = decision.warmingUp,
                 illuminationEvents = illuminationEvents,
+                // Over the suspect gate but uncorroborated: captured, but not
+                // confirmed, and the UI must not colour it as though it were.
+                candidate = !decision.illumination &&
+                    decision.assessment.signals.areaFraction >=
+                    settings.trigger.illuminationSuspectFraction,
                 captureMode = if (events.isActive) events.currentMode.name.lowercase() else null,
                 activeEventId = if (events.isActive) events.currentEventId else null,
             )

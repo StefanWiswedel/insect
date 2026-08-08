@@ -35,6 +35,7 @@ import dk.biomon.insect.CaptureBus
 import dk.biomon.insect.CaptureUiState
 import dk.biomon.insect.SettingsRepository
 import dk.biomon.insect.core.policy.DiskLevel
+import dk.biomon.insect.core.policy.StopReason
 import dk.biomon.insect.core.policy.ThermalLevel
 import dk.biomon.insect.service.CaptureService
 import kotlinx.coroutines.launch
@@ -110,7 +111,7 @@ fun CaptureScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(4f / 3f)
-                    .background(Color.Black)
+                    .background(BgSunken)
             ) {
                 if (permissionsGranted) {
                     PreviewImage(state, modifier = Modifier.fillMaxSize())
@@ -237,16 +238,30 @@ internal fun PreviewImage(state: CaptureUiState, modifier: Modifier = Modifier) 
 private fun StatusHeader(state: CaptureUiState) {
     val guard = state.guard
     val colour = when {
-        !state.running -> MaterialTheme.colorScheme.onSurfaceVariant
-        guard?.captureAllowed == false -> StateRed
+        // Not running, still converging, or holding an uncorroborated blob:
+        // none of these are confirmed, and the design system reserves absence
+        // of colour for exactly that. A candidate must not look like a catch.
+        !state.running -> InkSoft
+        state.warmingUp -> InkSoft
+        state.candidate -> InkSoft
+
+        // --signal is reserved for terminal states. Disk stop and thermal stop
+        // qualify; low battery does not, because it is a planned graceful
+        // shutdown rather than a fault.
+        guard?.stopReason == StopReason.DISK_FULL -> Signal
+        guard?.stopReason == StopReason.OVERHEATED -> Signal
+        state.lastError != null -> Signal
+
+        guard?.stopReason == StopReason.LOW_BATTERY -> Ember
         guard != null && (guard.disk != DiskLevel.NORMAL || guard.thermal != ThermalLevel.NOMINAL) ->
-            StateAmber
-        else -> StateGreen
+            Ember
+        else -> Alive
     }
     val label = when {
         !state.running -> "Idle"
         state.warmingUp -> "Warming up"
         guard?.captureAllowed == false -> "Capture stopped"
+        state.candidate -> "Candidate"
         state.captureMode != null -> "Capturing (${state.captureMode})"
         else -> "Watching"
     }
@@ -312,7 +327,7 @@ private fun StorageState(
             "Writing to app-specific storage: these frames are DELETED if the app " +
                 "is uninstalled, and will not appear over USB or in the gallery. " +
                 "Grant All Files Access, then restart the session.",
-            StateAmber,
+            Ember,
         )
         TextButton(onClick = onRequestAllFilesAccess) { Text("Grant All Files Access") }
     }
@@ -326,11 +341,11 @@ private fun Warnings(state: CaptureUiState) {
         when (guard.disk) {
             DiskLevel.DEGRADED -> Warning(
                 "Disk pressure: capture rate reduced and the trigger is more selective.",
-                StateAmber,
+                Ember,
             )
             DiskLevel.STOPPED -> Warning(
                 "Disk nearly full: capture stopped, session still open.",
-                StateRed,
+                Signal,
             )
             DiskLevel.NORMAL -> Unit
         }
@@ -345,13 +360,14 @@ private fun Warnings(state: CaptureUiState) {
                         append(" Capture capped at %.0ffps with it.".format(guard.maxCaptureFps))
                     }
                 },
-                StateAmber,
+                Ember,
             )
-            ThermalLevel.STOPPED -> Warning("Too hot: capture stopped.", StateRed)
+            ThermalLevel.STOPPED -> Warning("Too hot: capture stopped.", Signal)
             ThermalLevel.NOMINAL -> Unit
         }
     }
-    state.lastError?.let { Warning(it, StateRed) }
+    // Camera error: the third and last thing allowed to be --signal.
+    state.lastError?.let { Warning(it, Signal) }
 }
 
 @Composable
@@ -382,7 +398,7 @@ private fun Readings(state: CaptureUiState) {
             // one that earns colour when it starts to run out.
             when {
                 guard == null -> InkFaint
-                guard.disk == DiskLevel.STOPPED -> Signal
+                guard.disk == DiskLevel.STOPPED -> Signal   // terminal
                 guard.disk == DiskLevel.DEGRADED -> Ember
                 else -> Ink
             },
@@ -393,7 +409,8 @@ private fun Readings(state: CaptureUiState) {
             "%",
             when {
                 guard == null -> InkFaint
-                guard.batteryPercent in 0..10 -> Signal
+                // Never --signal: a flat battery ends the deployment by design,
+                // gracefully, and is not one of the three terminal faults.
                 guard.batteryPercent in 0..25 -> Ember
                 else -> Ink
             },
@@ -404,7 +421,7 @@ private fun Readings(state: CaptureUiState) {
             "°C",
             when {
                 guard == null -> InkFaint
-                guard.thermal == ThermalLevel.STOPPED -> Signal
+                guard.thermal == ThermalLevel.STOPPED -> Signal   // terminal
                 guard.thermal == ThermalLevel.REDUCED -> Ember
                 else -> Ink
             },
@@ -449,8 +466,8 @@ private fun Reading(label: String, value: String) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodySmall,
-            color = InkMuted,
+            color = InkFaint,
         )
-        Text(text = value, style = SmallReadingStyle, color = Ink)
+        Text(text = value, style = SmallReadingStyle, color = InkSoft)
     }
 }

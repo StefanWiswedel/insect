@@ -154,6 +154,16 @@ data class CaptureUiState(
      * this tick rather than pulling the manifest afterwards.
      */
     val illuminationEvents: Long = 0,
+    /**
+     * The current frame's largest blob is over the illumination suspect gate but
+     * did not collect its corroborating signals -- so it was captured as a
+     * detection while being exactly the shape of thing that turned out to be
+     * artefact in the first sessions.
+     *
+     * Surfaced because the design system reserves *absence of colour* for
+     * candidate state: this must not read as a confirmed detection.
+     */
+    val candidate: Boolean = false,
     val mask: MaskSnapshot? = null,
     val preview: PreviewFrame? = null,
     /** Most recent recorded error, so a degraded session is visible at a glance. */

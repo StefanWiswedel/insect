@@ -688,51 +688,52 @@ in.
 
 ### Visual language
 
-The Biomon design system, so this reads as the same instrument as the bird
-station rather than as a second identity. `Theme.kt` carries the tokens and
-`Type.kt` the faces; both are the only files restyling should need to touch.
+**The source of truth is `.claude/skills/biomon-ui/SKILL.md`**, in this
+repository. It is shared with the bird station and neither app changes it
+unilaterally — the skill changes first and both follow. What follows is what
+this app does with it, not a restatement of it.
 
-| Token | Value | Use |
-| --- | --- | --- |
-| `--bg` | `#100D0B` | Warm near-black ground |
-| `--ink` | `#F4EDE2` | Body text and readings |
-| `--alive` | `#9CC471` | Working as intended; also the mask overlay |
-| `--ember` | `#E8A33D` | Degraded but running: disk pressure, thermal backoff |
-| `--signal` | `#FF6B4A` | **Rare events only**: capture stopped, outstanding error |
+The concept is "nocturnal field ledger": warm near-black ground, specimen-label
+typography, mostly still, with the visual peak reserved for rare events. Tokens
+land in `Theme.kt`, faces in `Type.kt`, and those two files are the whole of the
+restyling surface.
 
-Fraunces for display, Instrument Sans for UI, Martian Mono for numerals.
+Three things the spec decides that shape this app specifically:
 
-**All numerals are monospaced with tabular figures.** Not decoration: a reading
-whose glyph widths change as the value changes makes the row twitch, and on a
-screen read at a glance to answer "is this still working", movement in the
-layout reads as movement in the data.
+- **`--signal` (`#FF6B4A`) is reserved**, and here that is exactly three states,
+  all terminal: thermal stop, disk stop, camera error. Low battery is deliberately
+  *not* one of them — it is a planned graceful shutdown, so it takes `--ember`. A
+  fourth use would almost certainly be wrong.
+- **Candidate state carries no colour.** `--ink-soft` and nothing else. This is
+  load-bearing rather than decorative: a blob over the illumination *suspect* gate
+  that has not collected its corroborating signals has been captured but not
+  confirmed, and the first sessions recorded exactly that class of thing as
+  detections when they were artefacts. Warm-up reads the same way, because a
+  model that has not converged is not saying anything real yet.
+- **The mask overlay is `--ember`, not `--alive`**, because it shows *activity* —
+  what the trigger currently reads as motion — rather than a confirmed detection.
+
+Fraunces (9pt optical cut), Instrument Sans and Martian Mono are **bundled** as
+`.ttf` in `res/font/`, with their SIL OFL licences in `assets/licenses/`. The
+downloadable-fonts path was rejected on purpose: a field instrument must not
+depend on Play Services to render its own numbers. That also rules out the system
+families, since `FontFamily.SansSerif` on Android *is* Roboto and the spec
+forbids it.
+
+All numerals are Martian Mono with `tnum`. A reading whose glyph widths change as
+the value changes makes the row twitch, and on a screen read at a glance to
+answer "is this still working", movement in the layout reads as movement in the
+data.
 
 Three tiers of hierarchy on the session screen, in the order the field asks for
-them: **state** first, colour-coded and the only thing on that screen carrying
-colour; then the three numbers that decide whether the rig survives the day —
-free space, battery, temperature — large, and coloured only when they turn bad;
-then everything else small, present to be auditable rather than to be read
-before walking away.
+them: **state** first, colour-coded, and the only thing carrying colour when all
+is well; then **free space, battery, temperature** large, each colouring only
+when its own guard trips; then everything else small, present to be auditable
+rather than read before walking away.
 
-**Still missing from the design system as adapted here.** The faces and the five
-colours came from the brief; `SKILL.md` itself could not be reached from this
-environment. Surface elevations, the muted ink steps, the spacing scale and the
-type scale are therefore derived rather than specified, and should be replaced
-when the file is available.
-
-**The three named faces are not in the build yet.** System stand-ins are used,
-matched by category: serif for display, sans for UI, monospace for numerals. Two
-things blocked the real ones and both need something from outside the build
-environment — the font files could not be fetched (`fonts.google.com` is refused
-by network policy, so they cannot be bundled), and downloadable fonts through
-Play Services need a provider certificate array that `ui-text-google-fonts` does
-not ship. That blob was not written from memory: a wrong certificate does not
-fail loudly, it makes every font fall back silently and permanently.
-
-Swapping them in is a change to three declarations in `Type.kt`, once either the
-`.ttf` files land in `res/font/` or the certificate array lands in
-`res/values/`. What survives the substitution is the operational part: numerals
-are monospaced and tabular either way, so readings do not twitch.
+**Still derived locally**, because the skill is silent on them: surface elevation
+steps beyond the three ground tokens, the spacing scale, the type scale, and the
+Material 3 container and outline roles.
 
 ### Window insets
 
